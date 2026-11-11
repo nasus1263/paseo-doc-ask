@@ -245,7 +245,14 @@ function DocAskViewer(props: PluginFilePanelProps) {
         }
         if (hasCommentFile) setComments(annotated.comments);
         show(nextDoc);
-        setMessage({ kind: "saved", title, status: "문서에 반영했습니다.", answer, note: annotated.id });
+        const replaced = annotated.replaced.length;
+        setMessage({
+          kind: "saved",
+          title,
+          status: replaced > 0 ? `겹치던 기존 각주 ${replaced}개를 대체해 반영했습니다.` : "문서에 반영했습니다.",
+          answer,
+          note: annotated.id,
+        });
       } finally {
         busy.current = false;
       }

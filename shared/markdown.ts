@@ -197,29 +197,128 @@ function wrappable(slice: string): boolean {
   );
 }
 
-/**
- * The range to wrap in `==` for a selection: the selection itself, or widened over adjacent
- * markup so delimiters stay balanced. Null when no such range exists, such as across lines or
- * inside fenced code.
- */
-export function highlightRange(text: string, at: TextRange): TextRange | null {
-  if (inFenceAt(text, at.from)) return null;
-  let left = at.from;
-  while (left > 0 && "*_~`[".includes(text[left - 1])) left--;
-  let right = at.to;
-  for (;;) {
-    if ("*_~`".includes(text[right] ?? "\n")) right++;
-    else if (text.startsWith("](", right) && text.indexOf(")", right) !== -1) right = text.indexOf(")", right) + 1;
-    else break;
+/** The inline code span on the line around `offset`, including its backticks, if any. */
+function codeSpanAround(text: string, offset: number): TextRange | null {
+  const lineStart = text.lastIndexOf("\n", offset - 1) + 1;
+  const lineEnd = text.indexOf("\n", offset) === -1 ? text.length : text.indexOf("\n", offset);
+  const line = text.slice(lineStart, lineEnd);
+  for (const match of line.matchAll(/`+[^`]*`+/g)) {
+    const from = lineStart + (match.index ?? 0);
+    const to = from + match[0].length;
+    if (offset > from && offset < to) return { from, to };
   }
-  const candidates = [at, { from: left, to: at.to }, { from: at.from, to: right }, { from: left, to: right }];
-  return candidates.find((range) => wrappable(text.slice(range.from, range.to))) ?? null;
+  return null;
 }
 
 /**
- * Annotates the selection `at` of `doc`: highlights it with `==` when that keeps the markup
- * intact and references a new footnote right after it. The definition is appended to
- * `comments`, the document's companion comment file. Labels are unique across both texts.
+ * The range to wrap in `==` for a selection. Markup touching the selection stays inside the
+ * highlight (`==**bold**==`, ``==`code`==``), because a highlight inside emphasis can break it
+ * and one inside code is not markup at all. A selection inside inline code takes the whole span.
+ * Null when no balanced range exists, such as across lines or inside fenced code.
+ */
+export function highlightRange(text: string, at: TextRange): TextRange | null {
+  if (inFenceAt(text, at.from)) return null;
+  const startCode = codeSpanAround(text, at.from);
+  const endCode = codeSpanAround(text, at.to - 1);
+  at = { from: startCode ? startCode.from : at.from, to: endCode ? endCode.to : at.to };
+  let left = at.from;
+  while (left > 0 && "*~`[".includes(text[left - 1])) left--;
+  let right = at.to;
+  for (;;) {
+    if ("*~`".includes(text[right] ?? "\n")) right++;
+    else if (text.startsWith("](", right) && text.indexOf(")", right) !== -1) right = text.indexOf(")", right) + 1;
+    else break;
+  }
+  const candidates = [{ from: left, to: right }, { from: left, to: at.to }, { from: at.from, to: right }, at];
+  return candidates.find((range) => wrappable(text.slice(range.from, range.to))) ?? null;
+}
+
+/** An existing annotation in a document: a highlight with an optional reference, or a bare reference. */
+interface Annotation {
+  /** Source ranges to delete to remove it: the `==` delimiters and the reference. */
+  removals: TextRange[];
+  /** The span it covers, from the opening `==` (or the reference) to the end of the reference. */
+  span: TextRange;
+  label: string | null;
+  highlighted: boolean;
+}
+
+/** Highlights and footnote references of `doc`, outside fenced and inline code. */
+function findAnnotations(doc: string): Annotation[] {
+  const found: Annotation[] = [];
+  const token = new RegExp(INLINE_TOKEN.source, "g");
+  for (const match of doc.matchAll(token)) {
+    const from = match.index ?? 0;
+    if (inFenceAt(doc, from) || codeSpanAround(doc, from) || doc[from + match[0].length] === ":") continue;
+    const [whole, marked, markRef, markLabel, refLabel] = match;
+    const to = from + whole.length;
+    if (marked !== undefined) {
+      const close = from + 2 + marked.length;
+      const removals = [{ from, to: from + 2 }, { from: close, to: close + 2 }];
+      if (markRef !== undefined) removals.push({ from: close + 2, to });
+      found.push({ removals, span: { from, to }, label: markLabel ?? null, highlighted: true });
+    } else if (refLabel !== undefined) {
+      found.push({ removals: [{ from, to }], span: { from, to }, label: refLabel, highlighted: false });
+    }
+  }
+  return found;
+}
+
+/** Deletes the definition of footnote `label` from `text`, with one blank line next to it. */
+function removeDefinition(text: string, label: string): string {
+  const lines = text.split("\n");
+  const span = definitionSpan(lines, label);
+  if (!span) return text;
+  let { first, last } = span;
+  if (first > 0 && lines[first - 1].trim() === "") first--;
+  else if (last + 1 < lines.length && lines[last + 1].trim() === "") last++;
+  lines.splice(first, last - first + 1);
+  return lines.join("\n");
+}
+
+/**
+ * Removes annotations the selection `at` overlaps: highlights that intersect it, and bare
+ * references inside it or right at its end. Their definitions are removed from both texts.
+ * Returns the texts, the selection shifted to match, and the removed footnote labels.
+ */
+export function removeOverlapping(
+  doc: string,
+  comments: string,
+  at: TextRange,
+): { doc: string; comments: string; at: TextRange; removed: string[] } {
+  const overlapping = findAnnotations(doc).filter((note) =>
+    note.highlighted
+      ? note.span.from < at.to && note.span.to > at.from
+      : note.span.from >= at.from && note.span.from <= at.to,
+  );
+  const removals = overlapping.flatMap((note) => note.removals).sort((a, b) => b.from - a.from);
+  let { from, to } = at;
+  for (const cut of removals) {
+    doc = doc.slice(0, cut.from) + doc.slice(cut.to);
+    const length = cut.to - cut.from;
+    const shift = (offset: number) => (offset >= cut.to ? offset - length : offset > cut.from ? cut.from : offset);
+    from = shift(from);
+    to = shift(to);
+  }
+  const removed = [...new Set(overlapping.map((note) => note.label).filter((label): label is string => label !== null))];
+  for (const label of removed) {
+    // Keep a definition another reference still uses.
+    if (new RegExp(`\\[\\^${escapeRegExp(label)}\\](?!:)`).test(doc)) continue;
+    doc = removeDefinition(doc, label);
+    comments = removeDefinition(comments, label);
+  }
+  return { doc, comments, at: { from, to }, removed };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Annotates the selection `at` of `doc`: replaces annotations it overlaps, highlights it with
+ * `==` when that keeps the markup intact, and references a new footnote right after it. The
+ * definition is appended to `comments`, the document's companion comment file. Labels are
+ * unique across both texts.
  */
 export function annotate(
   doc: string,
@@ -228,7 +327,9 @@ export function annotate(
   label: string,
   subject: string,
   answer: string,
-): { doc: string; comments: string; id: string } {
+): { doc: string; comments: string; id: string; replaced: string[] } {
+  const cleared = removeOverlapping(doc, comments, at);
+  ({ doc, comments, at } = cleared);
   const id = nextFootnoteLabel(`${doc}\n${comments}`);
   const ref = `[^${id}]`;
   const mark = highlightRange(doc, at);
@@ -247,6 +348,7 @@ export function annotate(
     doc: withRef,
     comments: existing === "" ? `${definition}\n` : `${existing}\n\n${definition}\n`,
     id,
+    replaced: cleared.removed,
   };
 }
 
@@ -319,7 +421,23 @@ export interface Mark {
   number: number | null;
 }
 
-const INLINE_TOKEN = /==(?=\S)([^=\n]*?\S)==(\[\^([^\]\s]+)\])?|\[\^([^\]\s]+)\]/g;
+// A highlight may contain a single `=` (as in "a = b"), never `==`.
+const INLINE_TOKEN = /==(?=\S)((?:[^=\n]|=(?!=))*?\S)==(\[\^([^\]\s]+)\])?|\[\^([^\]\s]+)\]/g;
+// Private-use characters that stand in for inline code spans while highlights are parsed.
+const CODE_OPEN = "";
+const CODE_CLOSE = "";
+const CODE_PLACEHOLDER = /(\d+)/g;
+const LEGACY_CODE_MARK = /`==((?:[^=`\n]|=(?!=))+?)==`/g;
+const LEGACY_EMPHASIS_MARK = /(\*\*|\*|~~)==((?:[^=\n]|=(?!=))+?)==\1/g;
+
+/**
+ * Moves highlights written inside inline code or emphasis (`` `==x==` ``, `**==x==**`) outside
+ * it for display. Inside code `==` is literal, and inside emphasis it can keep the emphasis from
+ * closing. Older versions of this plugin wrote them that way.
+ */
+function hoistLegacyMarks(line: string): string {
+  return line.replace(LEGACY_CODE_MARK, "==`$1`==").replace(LEGACY_EMPHASIS_MARK, "==$1$2$1==");
+}
 
 /** Splits footnote definitions out of `text`, adding them to `definitions`; returns the other lines. */
 function extractDefinitions(text: string, definitions: Map<string, string>): string[] {
@@ -375,30 +493,33 @@ export function prepareFootnotes(
     .map((line) => {
       if (FENCE.test(line)) inFence = !inFence;
       if (inFence || (!line.includes("[^") && !line.includes("=="))) return line;
-      // Odd parts are inline code spans.
-      return line
-        .split(/(`+[^`]*`+)/)
-        .map((part, index) =>
-          index % 2 === 1
-            ? part
-            : part.replace(
-                INLINE_TOKEN,
-                (match, marked: string | undefined, markRef: string | undefined, markLabel: string | undefined, label: string | undefined, offset: number) => {
-                  if (marked !== undefined) {
-                    const linked = markLabel !== undefined && definitions.has(markLabel);
-                    const n = linked ? numberOf(markLabel) : null;
-                    marks.push({ text: marked, number: n });
-                    const shown = MARK_OPEN + marked + MARK_CLOSE;
-                    if (markRef === undefined) return shown;
-                    return n === null ? shown + markRef : shown + superscript(n);
-                  }
-                  if (label === undefined || !definitions.has(label)) return match;
-                  const adjacent = offset > 0 && part.slice(0, offset).endsWith("]");
-                  return `${adjacent ? "," : ""}${superscript(numberOf(label))}`;
-                },
-              ),
-        )
-        .join("");
+      // Inline code is opaque: swap each span for a placeholder so `==` inside it is left alone,
+      // while a highlight around it (==`code`==) still parses.
+      const spans: string[] = [];
+      const masked = hoistLegacyMarks(line).replace(/`+[^`]*`+/g, (span) => {
+        spans.push(span);
+        return `${CODE_OPEN}${spans.length - 1}${CODE_CLOSE}`;
+      });
+      const restore = (text: string) =>
+        text.replace(CODE_PLACEHOLDER, (_, index: string) => spans[Number(index)]);
+      return restore(
+        masked.replace(
+          INLINE_TOKEN,
+          (match, marked: string | undefined, markRef: string | undefined, markLabel: string | undefined, label: string | undefined, offset: number) => {
+            if (marked !== undefined) {
+              const linked = markLabel !== undefined && definitions.has(markLabel);
+              const n = linked ? numberOf(markLabel) : null;
+              marks.push({ text: restore(marked), number: n });
+              const shown = MARK_OPEN + marked + MARK_CLOSE;
+              if (markRef === undefined) return shown;
+              return n === null ? shown + markRef : shown + superscript(n);
+            }
+            if (label === undefined || !definitions.has(label)) return match;
+            const adjacent = offset > 0 && masked.slice(0, offset).endsWith("]");
+            return `${adjacent ? "," : ""}${superscript(numberOf(label))}`;
+          },
+        ),
+      );
     })
     .join("\n")
     .replace(/\s+$/, "");

@@ -70,10 +70,35 @@ test("annotate highlights and references in the document, defines in the comment
   const doc = "# T\n\nAlpha **beta** gamma.\n\nNext.\n";
   const from = doc.indexOf("beta");
   assert.deepEqual(annotate(doc, "", { from, to: from + 4 }, "질문", "왜?", "답"), {
-    doc: "# T\n\nAlpha **==beta==**[^1] gamma.\n\nNext.\n",
+    doc: "# T\n\nAlpha ==**beta**==[^1] gamma.\n\nNext.\n",
     comments: "[^1]: **질문: 왜?**\n\n    답\n",
     id: "1",
+    replaced: [],
   });
+});
+
+test("annotate replaces an overlapping annotation", () => {
+  const doc = "x ==ab==[^1]cdefgh y\n";
+  const comments = "[^1]: **설명: ab**\n\n    old\n\n[^2]: **설명: z**\n\n    keep\n";
+  // The user selects "bcd" in the rendered text.
+  const from = doc.indexOf("b==");
+  const to = doc.indexOf("d") + 1;
+  assert.deepEqual(annotate(doc, comments, { from, to }, "설명", "bcd", "new"), {
+    doc: "x a==bcd==[^3]efgh y\n",
+    comments: "[^2]: **설명: z**\n\n    keep\n\n[^3]: **설명: bcd**\n\n    new\n",
+    id: "3",
+    replaced: ["1"],
+  });
+});
+
+test("annotate replaces a bare reference inside the selection", () => {
+  const doc = "abc[^3]def\n";
+  const comments = "[^3]: **설명: c**\n\n    old\n";
+  const to = doc.indexOf("d") + 1;
+  const { doc: next, comments: notes, replaced } = annotate(doc, comments, { from: 1, to }, "설명", "bcd", "A");
+  assert.equal(next, "a==bcd==[^1]ef\n");
+  assert.equal(notes, "[^1]: **설명: bcd**\n\n    A\n");
+  assert.deepEqual(replaced, ["3"]);
 });
 
 test("annotate numbers past labels in both files and appends to existing comments", () => {
@@ -84,6 +109,7 @@ test("annotate numbers past labels in both files and appends to existing comment
     doc: "a ==x==[^1] ==b==[^2]\n",
     comments: "[^1]: **설명: x**\n\n    old\n\n[^2]: **설명: b**\n\n    new\n",
     id: "2",
+    replaced: [],
   });
 });
 
@@ -102,11 +128,14 @@ test("commentPathOf names the companion file", () => {
   assert.equal(commentPathOf("/a/b.txt"), null);
 });
 
-test("highlightRange widens over markup to keep delimiters balanced", () => {
-  const text = "이것은 **멱등성**(idempotency)과 [재시도 큐](https://x.y/z)다.";
+test("highlightRange keeps touching markup inside the highlight", () => {
+  const text = "이것은 **멱등성**(idempotency)과 [재시도 큐](https://x.y/z)다. 저장 `Zones` 목록, **굵은 글 일부**";
   const slice = (range) => (range ? text.slice(range.from, range.to) : null);
   const at = (s) => ({ from: text.indexOf(s), to: text.indexOf(s) + s.length });
-  assert.equal(slice(highlightRange(text, at("멱등성"))), "멱등성");
+  assert.equal(slice(highlightRange(text, at("멱등성"))), "**멱등성**");
+  assert.equal(slice(highlightRange(text, at("Zones"))), "`Zones`");
+  assert.equal(slice(highlightRange(text, at("Zon"))), "`Zones`");
+  assert.equal(slice(highlightRange(text, at("글"))), "글");
   assert.equal(slice(highlightRange(text, at("멱등성**(idempotency)"))), "**멱등성**(idempotency)");
   assert.equal(slice(highlightRange(text, at("과 [재시도 큐"))), "과 [재시도 큐](https://x.y/z)");
   assert.equal(highlightRange("```\ncode\n```", { from: 4, to: 8 }), null);
@@ -134,14 +163,20 @@ test("prepareFootnotes renders references as superscripts and collects notes", (
 });
 
 test("prepareFootnotes wraps highlights in sentinels and links them to their footnotes", () => {
-  const text = "A ==멱등성==[^1] and ==plain== but `==code==`.";
+  const text = "A ==멱등성==[^1] and ==a = b== but `x == y` and ==`code`==.";
   const { body, marks, notes } = prepareFootnotes(text, "# 주석\n\n[^1]: note");
-  assert.equal(body, "A ⁣멱등성⁤¹ and ⁣plain⁤ but `==code==`.");
+  assert.equal(body, "A ⁣멱등성⁤¹ and ⁣a = b⁤ but `x == y` and ⁣`code`⁤.");
   assert.deepEqual(marks, [
     { text: "멱등성", number: 1 },
-    { text: "plain", number: null },
+    { text: "a = b", number: null },
+    { text: "`code`", number: null },
   ]);
   assert.deepEqual(notes, [{ label: "1", number: 1, content: "note" }]);
+});
+
+test("prepareFootnotes shows older highlights written inside code or emphasis outside it", () => {
+  const { body } = prepareFootnotes("저장 `==Zones==` 목록, **==P3 = 최적==**[^1]", "[^1]: n");
+  assert.equal(body, "저장 ⁣`Zones`⁤ 목록, ⁣**P3 = 최적**⁤¹");
 });
 
 test("prepareFootnotes prefers the document's own definition over the comment file", () => {
