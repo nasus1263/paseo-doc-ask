@@ -42,3 +42,10 @@ export const layoutSettings = defineSettings({
   version: 1,
   schema: z.object({ messageHeight: z.number().int().min(60).max(4000).default(220) }),
 });
+
+/** Asks the workspace's explainer to commit only the footnote changes of a document. */
+export const commitRpc = defineRpc({
+  name: "doc-ask.commit-footnotes",
+  input: z.object({ workspaceId: z.string(), path: z.string() }),
+  output: z.object({ committed: z.boolean(), summary: z.string() }),
+});

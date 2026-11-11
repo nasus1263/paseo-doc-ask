@@ -11,7 +11,7 @@ import {
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
-import { type AskMode, explainRpc, layoutSettings, promptSettings, resetRpc } from "../shared/explain";
+import { type AskMode, commitRpc, explainRpc, layoutSettings, promptSettings, resetRpc } from "../shared/explain";
 import {
   addFootnote,
   type Footnote,
@@ -47,10 +47,13 @@ interface AskRequest {
   question?: string;
 }
 
-type Message =
-  | { kind: "pending"; title: string }
-  | { kind: "saved"; title: string; answer: string }
-  | { kind: "failed"; title: string; reason: string; answer: string | null };
+/** What the message panel shows: a status line, the request title, and the answer if any. */
+interface Message {
+  kind: "pending" | "saved" | "failed";
+  title: string;
+  status: string;
+  answer: string | null;
+}
 
 const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문" };
 const TOOLTIP_WIDTH = 380;
@@ -109,7 +112,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
       const label = MODE_LABEL[mode];
       const subject = mode === "question" && question ? question : anchor.text;
       const title = `${label}: ${subject}`;
-      setMessage({ kind: "pending", title });
+      setMessage({ kind: "pending", title, status: "AI에게 묻는 중…", answer: null });
       try {
         let answer: string;
         try {
@@ -122,10 +125,10 @@ function DocAskViewer(props: PluginFilePanelProps) {
             question,
           }));
         } catch (cause) {
-          setMessage({ kind: "failed", title, reason: `요청 실패: ${messageOf(cause)}`, answer: null });
+          setMessage({ kind: "failed", title, status: `요청 실패: ${messageOf(cause)}`, answer: null });
           return;
         }
-        const failed = (reason: string) => setMessage({ kind: "failed", title, reason, answer });
+        const failed = (status: string) => setMessage({ kind: "failed", title, status, answer });
         let latest: string;
         try {
           // Merge into the newest version so edits made while waiting are kept.
@@ -156,7 +159,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
           return;
         }
         show(next);
-        setMessage({ kind: "saved", title, answer });
+        setMessage({ kind: "saved", title, status: "문서에 반영했습니다.", answer });
       } finally {
         busy.current = false;
       }
@@ -209,6 +212,28 @@ function DocAskViewer(props: PluginFilePanelProps) {
     }
   }, [reset, toast, workspaceId]);
 
+  const commit = useRpc(commitRpc);
+  const [committing, setCommitting] = useState(false);
+  const commitFootnotes = useCallback(async () => {
+    const title = `각주 커밋: ${file.name}`;
+    setCommitting(true);
+    setMessage({ kind: "pending", title, status: "해설 세션이 각주 변경만 골라 커밋하는 중…", answer: null });
+    try {
+      // Queued behind any question in flight on the same explainer session.
+      const { committed, summary } = await commit({ workspaceId, path: file.path });
+      setMessage({
+        kind: committed ? "saved" : "failed",
+        title,
+        status: committed ? "각주 변경을 커밋했습니다." : "커밋하지 않았습니다.",
+        answer: summary,
+      });
+    } catch (cause) {
+      setMessage({ kind: "failed", title, status: `커밋 요청 실패: ${messageOf(cause)}`, answer: null });
+    } finally {
+      setCommitting(false);
+    }
+  }, [commit, file, workspaceId]);
+
   const prompt = useSettings(promptSettings);
   const hasPrompt = prompt.status === "ready" && prompt.values.extraPrompt.trim() !== "";
 
@@ -240,6 +265,14 @@ function DocAskViewer(props: PluginFilePanelProps) {
           </Pressable>
         ))}
         <View style={styles.spacer} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="이 문서의 각주 변경만 git 커밋"
+          disabled={committing}
+          onPress={commitFootnotes}
+        >
+          <Text style={styles.tab}>{committing ? "커밋 중…" : "각주 커밋"}</Text>
+        </Pressable>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="함께 보낼 프롬프트 설정"
@@ -692,7 +725,7 @@ function MessageBox({
     [],
   );
 
-  const answer = message.kind === "pending" ? null : message.answer;
+  const answer = message.answer;
   const styles = useMemo(
     () => ({
       box: {
@@ -726,12 +759,7 @@ function MessageBox({
     }),
     [theme, message.kind],
   );
-  const status =
-    message.kind === "pending"
-      ? "AI에게 묻는 중…"
-      : message.kind === "saved"
-        ? "문서에 반영했습니다."
-        : message.reason;
+  const status = message.status;
 
   async function copyAnswer() {
     if (!answer) return;

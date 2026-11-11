@@ -29,7 +29,7 @@ const seenDocs = new Map<string, Map<string, string>>();
 /** Serializes questions per workspace so the resident agent never gets two turns at once. */
 const queues = new Map<string, Promise<unknown>>();
 
-function enqueue<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
+export function enqueue<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
   const previous = queues.get(workspaceId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(work);
   queues.set(workspaceId, next);
@@ -117,7 +117,7 @@ function labelledAgents(paseo: Paseo, workspaceId: string) {
  * The workspace's explainer, found by label or created. This daemon rejects background agents in
  * an existing workspace, so the explainer gets its own hidden workspace on the same directory.
  */
-async function residentAgent(paseo: Paseo, workspaceId: string): Promise<string> {
+export async function residentAgent(paseo: Paseo, workspaceId: string): Promise<string> {
   const cached = agentIds.get(workspaceId);
   if (cached) return cached;
   const [existing] = await labelledAgents(paseo, workspaceId);
