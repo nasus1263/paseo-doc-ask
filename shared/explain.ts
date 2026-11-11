@@ -13,3 +13,10 @@ export const explainRpc = defineRpc({
   }),
   output: z.object({ answer: z.string() }),
 });
+
+/** Starts a fresh explainer session for the workspace by archiving the current one. */
+export const resetRpc = defineRpc({
+  name: "doc-ask.reset",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({ retired: z.number() }),
+});

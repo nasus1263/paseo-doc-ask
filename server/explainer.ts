@@ -1,6 +1,6 @@
 import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import type { explainRpc } from "../shared/explain";
+import type { explainRpc, resetRpc } from "../shared/explain";
 
 type Paseo = PluginHandlerContext["paseo"];
 
@@ -10,6 +10,8 @@ const THINKING = "low";
 const RUN_TIMEOUT_MS = 5 * 60 * 1000;
 /** Documents above this size are not inlined; the agent reads them from disk instead. */
 const MAX_INLINE_CHARS = 120_000;
+/** Context size at which the resident agent is retired, well before the provider compacts it. */
+const ROTATE_AT_TOKENS = 150_000;
 
 const SYSTEM_PROMPT = [
   "너는 문서 해설자다. 사용자가 문서를 읽다가 이해하기 어려운 부분을 선택해 물어보면 쉽게 설명한다.",
@@ -26,20 +28,28 @@ const seenDocs = new Map<string, Map<string, string>>();
 /** Serializes questions per workspace so the resident agent never gets two turns at once. */
 const queues = new Map<string, Promise<unknown>>();
 
-export function explain(input: RpcInput<typeof explainRpc>, { paseo }: PluginHandlerContext) {
-  const previous = queues.get(input.workspaceId) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(() => ask(paseo, input));
-  queues.set(input.workspaceId, next);
+function enqueue<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
+  const previous = queues.get(workspaceId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  queues.set(workspaceId, next);
   return next;
+}
+
+export function explain(input: RpcInput<typeof explainRpc>, { paseo }: PluginHandlerContext) {
+  return enqueue(input.workspaceId, () => ask(paseo, input));
+}
+
+/** Retires the workspace's explainer after any running question; the next question starts fresh. */
+export function resetContext(input: RpcInput<typeof resetRpc>, { paseo }: PluginHandlerContext) {
+  return enqueue(input.workspaceId, async () => ({ retired: await retire(paseo, input.workspaceId) }));
 }
 
 async function ask(paseo: Paseo, input: RpcInput<typeof explainRpc>): Promise<{ answer: string }> {
   const agentId = await residentAgent(paseo, input.workspaceId);
+  const agent = paseo.agents.ref(agentId);
   let result;
   try {
-    result = await paseo.agents
-      .ref(agentId)
-      .run(buildPrompt(agentId, input), { timeoutMs: RUN_TIMEOUT_MS });
+    result = await agent.run(buildPrompt(agentId, input), { timeoutMs: RUN_TIMEOUT_MS });
   } catch (cause) {
     // The agent may have been archived or deleted; find or create it again next time.
     agentIds.delete(input.workspaceId);
@@ -54,26 +64,70 @@ async function ask(paseo: Paseo, input: RpcInput<typeof explainRpc>): Promise<{ 
   const answer = result.lastMessage?.trim();
   if (!answer) throw new Error("해설 에이전트가 빈 답을 반환했습니다.");
   rememberDoc(agentId, input);
+  const usage = agent.lastUsage;
+  const used = usage?.contextWindowUsedTokens ?? (usage?.inputTokens ?? 0) + (usage?.cachedInputTokens ?? 0);
+  if (used >= ROTATE_AT_TOKENS) {
+    console.log(`Explainer ${agentId} reached ${used} context tokens; retiring it.`);
+    await retire(paseo, input.workspaceId);
+  }
   return { answer };
 }
 
+/**
+ * Archives every explainer of the workspace, with the hidden workspace each one lives in, and
+ * forgets their state. Returns how many agents it archived.
+ */
+async function retire(paseo: Paseo, workspaceId: string): Promise<number> {
+  const hidden = new Map<string, string | null>();
+  const cached = agentIds.get(workspaceId);
+  if (cached) hidden.set(cached, null);
+  for (const { agent } of await labelledAgents(paseo, workspaceId)) {
+    hidden.set(agent.id, agent.workspaceId ?? null);
+  }
+  agentIds.delete(workspaceId);
+  let archived = 0;
+  for (const [id, home] of hidden) {
+    seenDocs.delete(id);
+    try {
+      await paseo.agents.ref(id).archive();
+      archived++;
+      // Never archive the user's workspace, only the explainer's own hidden one.
+      if (home && home !== workspaceId) await paseo.workspaces.archive(home);
+    } catch (cause) {
+      console.error(`Could not archive explainer ${id}:`, cause);
+    }
+  }
+  return archived;
+}
+
+function labelledAgents(paseo: Paseo, workspaceId: string) {
+  return paseo.agents
+    .list({ includeBackground: true, filter: { labels: { [LABEL]: workspaceId }, includeBackground: true } })
+    .then(({ entries }) => entries);
+}
+
+/**
+ * The workspace's explainer, found by label or created. This daemon rejects background agents in
+ * an existing workspace, so the explainer gets its own hidden workspace on the same directory.
+ */
 async function residentAgent(paseo: Paseo, workspaceId: string): Promise<string> {
   const cached = agentIds.get(workspaceId);
   if (cached) return cached;
-  const { entries } = await paseo.agents.list({
-    includeBackground: true,
-    filter: { labels: { [LABEL]: workspaceId }, includeBackground: true },
-  });
-  const id =
-    entries[0]?.agent.id ??
-    (
-      await paseo.workspaces.ref(workspaceId).agents.create({
-        config: { provider: PROVIDER, thinkingOptionId: THINKING, modeId: "default", systemPrompt: SYSTEM_PROMPT },
-        title: "문서 해설",
-        background: true,
-        labels: { [LABEL]: workspaceId },
-      })
-    ).id;
+  const [existing] = await labelledAgents(paseo, workspaceId);
+  let id = existing?.agent.id;
+  if (!id) {
+    const workspace = paseo.workspaces.ref(workspaceId);
+    await workspace.refresh();
+    if (!workspace.directory) throw new Error("워크스페이스 디렉터리를 찾지 못했습니다.");
+    const agent = await paseo.agents.create({
+      cwd: workspace.directory,
+      config: { provider: PROVIDER, thinkingOptionId: THINKING, modeId: "default", systemPrompt: SYSTEM_PROMPT },
+      title: "문서 해설",
+      background: true,
+      labels: { [LABEL]: workspaceId },
+    });
+    id = agent.id;
+  }
   agentIds.set(workspaceId, id);
   return id;
 }

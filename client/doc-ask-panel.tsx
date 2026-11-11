@@ -10,7 +10,7 @@ import {
 import { copyText, Loading, Markdown, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { explainRpc } from "../shared/explain";
+import { explainRpc, resetRpc } from "../shared/explain";
 import {
   insertAnswer,
   keptLength,
@@ -137,12 +137,28 @@ function DocAskViewer(props: PluginFilePanelProps) {
     [explain, file, show, toast, workspaceId],
   );
 
+  const reset = useRpc(resetRpc);
+  const [resetting, setResetting] = useState(false);
+  const resetContext = useCallback(async () => {
+    setResetting(true);
+    try {
+      // Runs after any question in flight; the next question starts a fresh session.
+      await reset({ workspaceId });
+      toast.show("컨텍스트를 지웠습니다. 다음 질문부터 새 세션으로 시작합니다.", { variant: "success" });
+    } catch (cause) {
+      toast.error(`컨텍스트를 지우지 못했습니다: ${messageOf(cause)}`);
+    } finally {
+      setResetting(false);
+    }
+  }, [reset, toast, workspaceId]);
+
   const styles = useMemo(
     () => ({
       panel: { flex: 1, minHeight: 0, backgroundColor: theme.colors.surface0 },
       toolbar: { flexDirection: "row" as const, gap: 16, paddingHorizontal: 16, paddingVertical: 10 },
       tab: { color: theme.colors.foregroundMuted },
       tabActive: { color: theme.colors.foreground, fontWeight: "600" as const },
+      spacer: { flex: 1 },
       error: { color: theme.colors.statusDanger, paddingHorizontal: 16, paddingVertical: 8 },
     }),
     [theme],
@@ -163,12 +179,21 @@ function DocAskViewer(props: PluginFilePanelProps) {
             </Text>
           </Pressable>
         ))}
+        <View style={styles.spacer} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="해설 에이전트 컨텍스트 지우기"
+          disabled={resetting}
+          onPress={resetContext}
+        >
+          <Text style={styles.tab}>{resetting ? "지우는 중…" : "컨텍스트 지우기"}</Text>
+        </Pressable>
       </View>
       {loadError ? <Text style={styles.error}>{loadError}</Text> : null}
       {text === null ? (
         loadError ? null : <Loading />
       ) : view.view === "preview" ? (
-        <PreviewView text={text} theme={theme} onAsk={ask} />
+        <PreviewView text={text} theme={theme} compact={props.layout.compact} onAsk={ask} />
       ) : (
         <SourceView text={text} theme={theme} onAsk={ask} />
       )}
@@ -183,8 +208,23 @@ interface ViewProps {
   onAsk: (question: Question) => void;
 }
 
+/** Paseo's built-in Markdown preview layout: a gutter around a centered reading column. */
+const CONTENT_MAX_WIDTH = 820;
+
+function readingLayout(compact: boolean) {
+  return {
+    gutter: { width: "100%" as const, paddingHorizontal: compact ? 12 : 16, paddingVertical: 16 },
+    frame: {
+      width: "100%" as const,
+      maxWidth: CONTENT_MAX_WIDTH,
+      alignSelf: "center" as const,
+      paddingHorizontal: 8,
+    },
+  };
+}
+
 /** Paseo's own Markdown rendering with a floating ask button over the selection. */
-function PreviewView({ text, theme, onAsk }: ViewProps) {
+function PreviewView({ text, theme, compact, onAsk }: ViewProps & { compact: boolean }) {
   const content = useRef<View>(null);
   const button = useRef<View>(null);
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
@@ -194,8 +234,8 @@ function PreviewView({ text, theme, onAsk }: ViewProps) {
 
   const styles = useMemo(
     () => ({
+      ...readingLayout(compact),
       scroll: { flex: 1, minHeight: 0 },
-      content: { paddingHorizontal: 24, paddingBottom: 24 },
       button: {
         position: "absolute" as const,
         paddingHorizontal: 10,
@@ -205,27 +245,29 @@ function PreviewView({ text, theme, onAsk }: ViewProps) {
       },
       label: { color: theme.colors.accentForeground },
     }),
-    [theme],
+    [theme, compact],
   );
 
   return (
     <ScrollView style={styles.scroll}>
-      <View ref={content} style={styles.content}>
-        <Markdown>{text}</Markdown>
-        {selection ? (
-          <View ref={button} style={[styles.button, { top: selection.top, left: selection.left }]}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="선택한 부분을 AI에게 묻기"
-              onPress={() => {
-                onAsk({ view: "preview", text: selection.text, hint: keptLength(selection.prefix) });
-                setSelection(null);
-              }}
-            >
-              <Text style={styles.label}>AI에게 묻기</Text>
-            </Pressable>
-          </View>
-        ) : null}
+      <View style={styles.gutter}>
+        <View ref={content} style={styles.frame}>
+          <Markdown>{text}</Markdown>
+          {selection ? (
+            <View ref={button} style={[styles.button, { top: selection.top, left: selection.left }]}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="선택한 부분을 AI에게 묻기"
+                onPress={() => {
+                  onAsk({ view: "preview", text: selection.text, hint: keptLength(selection.prefix) });
+                  setSelection(null);
+                }}
+              >
+                <Text style={styles.label}>AI에게 묻기</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
       </View>
     </ScrollView>
   );
@@ -326,23 +368,27 @@ function MessageBox({ message, theme, onClose }: { message: Message; theme: Them
 }
 
 /** Native has no selection API: Paseo's Markdown preview that follows the disk. */
-function NativePreview({ file, theme }: PluginFilePanelProps) {
+function NativePreview({ file, theme, layout }: PluginFilePanelProps) {
   const text = useFileText(file);
   const styles = useMemo(
     () => ({
+      ...readingLayout(layout.compact),
       screen: { flex: 1, backgroundColor: theme.colors.surface0 },
-      content: { padding: 16, gap: 12 },
-      note: { color: theme.colors.foregroundMuted },
+      note: { color: theme.colors.foregroundMuted, marginBottom: 12 },
       error: { color: theme.colors.statusDanger, padding: 16 },
     }),
-    [theme],
+    [theme, layout.compact],
   );
   if (text.status === "loading") return <Loading />;
   if (text.status === "error") return <Text style={styles.error}>{text.error.message}</Text>;
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.note}>선택해서 묻기는 데스크톱과 웹에서만 지원합니다.</Text>
-      <Markdown>{text.text}</Markdown>
+    <ScrollView style={styles.screen}>
+      <View style={styles.gutter}>
+        <View style={styles.frame}>
+          <Text style={styles.note}>선택해서 묻기는 데스크톱과 웹에서만 지원합니다.</Text>
+          <Markdown>{text.text}</Markdown>
+        </View>
+      </View>
     </ScrollView>
   );
 }
