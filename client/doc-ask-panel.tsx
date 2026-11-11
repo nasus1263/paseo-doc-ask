@@ -11,9 +11,19 @@ import {
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
-import { type AskMode, commitRpc, explainRpc, layoutSettings, promptSettings, resetRpc } from "../shared/explain";
 import {
-  addFootnote,
+  type AskMode,
+  commentsReadRpc,
+  commentsWriteRpc,
+  commitRpc,
+  explainRpc,
+  layoutSettings,
+  promptSettings,
+  resetRpc,
+} from "../shared/explain";
+import {
+  annotate,
+  commentPathOf,
   type Footnote,
   keptLength,
   locateRendered,
@@ -77,22 +87,35 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const [questionAnchor, setQuestionAnchor] = useState<Anchor | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const explain = useRpc(explainRpc);
+  const readComments = useRpc(commentsReadRpc);
+  const writeComments = useRpc(commentsWriteRpc);
   const toast = useToast();
-  const prepared = useMemo(() => (text === null ? null : prepareFootnotes(text)), [text]);
+  // Footnote definitions live in the companion comment file; a file without one keeps them inline.
+  const hasCommentFile = commentPathOf(file.path) !== null;
+  const [comments, setComments] = useState("");
+  const prepared = useMemo(() => (text === null ? null : prepareFootnotes(text, comments)), [text, comments]);
 
   const show = useCallback((next: string) => {
     latestText.current = next;
     setText(next);
   }, []);
 
+  const loadComments = useCallback(async () => {
+    if (!hasCommentFile) return "";
+    const { text: loaded } = await readComments({ path: file.path });
+    setComments(loaded);
+    return loaded;
+  }, [file, hasCommentFile, readComments]);
+
   const load = useCallback(async () => {
     try {
-      show(await file.readText());
+      const [doc] = await Promise.all([file.readText(), loadComments()]);
+      show(doc);
       setLoadError(null);
     } catch (cause) {
       setLoadError(messageOf(cause));
     }
-  }, [file, show]);
+  }, [file, loadComments, show]);
 
   useEffect(() => {
     void load();
@@ -130,9 +153,10 @@ function DocAskViewer(props: PluginFilePanelProps) {
         }
         const failed = (status: string) => setMessage({ kind: "failed", title, status, answer });
         let latest: string;
+        let latestComments: string;
         try {
-          // Merge into the newest version so edits made while waiting are kept.
-          latest = await file.readText();
+          // Merge into the newest versions so edits made while waiting are kept.
+          [latest, latestComments] = await Promise.all([file.readText(), loadComments()]);
         } catch (cause) {
           failed(`저장 실패: 파일을 읽지 못했습니다. ${messageOf(cause)}`);
           return;
@@ -145,10 +169,36 @@ function DocAskViewer(props: PluginFilePanelProps) {
           failed("저장 실패: 선택한 부분을 원문에서 찾지 못했습니다.");
           return;
         }
-        const next = addFootnote(latest, at, label, subject, answer);
+        const annotated = annotate(latest, latestComments, at, label, subject, answer);
+        const nextDoc = hasCommentFile
+          ? annotated.doc
+          : `${annotated.doc.replace(/\s+$/, "")}\n\n${annotated.comments}`;
+        // The definition goes in first, so a failed document write leaves at most an unused note.
+        if (hasCommentFile) {
+          try {
+            const { status } = await writeComments({
+              path: file.path,
+              text: annotated.comments,
+              base: latestComments,
+            });
+            if (status === "conflict") {
+              failed("저장 실패: 답을 기다리는 동안 주석 파일이 변경되었습니다.");
+              return;
+            }
+          } catch (cause) {
+            failed(`저장 실패: 주석 파일을 쓰지 못했습니다. ${messageOf(cause)}`);
+            return;
+          }
+        }
         try {
-          await file.writeText(next);
+          await file.writeText(nextDoc);
         } catch (cause) {
+          if (hasCommentFile) {
+            // Take the definition back out; best effort, the note is harmless if it stays.
+            void writeComments({ path: file.path, text: latestComments, base: annotated.comments })
+              .then(() => loadComments())
+              .catch(() => undefined);
+          }
           if (cause instanceof PluginFileConflictError) {
             failed("저장 실패: 답을 기다리는 동안 파일이 디스크에서 변경되었습니다.");
           } else if (cause instanceof PluginFileDeletedError) {
@@ -158,13 +208,14 @@ function DocAskViewer(props: PluginFilePanelProps) {
           }
           return;
         }
-        show(next);
+        if (hasCommentFile) setComments(annotated.comments);
+        show(nextDoc);
         setMessage({ kind: "saved", title, status: "문서에 반영했습니다.", answer });
       } finally {
         busy.current = false;
       }
     },
-    [explain, file, show, toast, workspaceId],
+    [explain, file, hasCommentFile, loadComments, show, toast, workspaceId, writeComments],
   );
 
   const onAction = useCallback(

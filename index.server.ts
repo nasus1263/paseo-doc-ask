@@ -1,7 +1,16 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { readComments, writeComments } from "./server/comments";
 import { commitFootnotes } from "./server/commit";
 import { createExplain, resetContext } from "./server/explainer";
-import { commitRpc, explainRpc, layoutSettings, promptSettings, resetRpc } from "./shared/explain";
+import {
+  commentsReadRpc,
+  commentsWriteRpc,
+  commitRpc,
+  explainRpc,
+  layoutSettings,
+  promptSettings,
+  resetRpc,
+} from "./shared/explain";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(layoutSettings);
@@ -13,5 +22,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(explainRpc, createExplain(readExtraPrompt));
   server.handle(resetRpc, resetContext);
   server.handle(commitRpc, commitFootnotes);
+  server.handle(commentsReadRpc, readComments);
+  server.handle(commentsWriteRpc, writeComments);
   return () => {};
 }

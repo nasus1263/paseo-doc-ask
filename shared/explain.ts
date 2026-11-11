@@ -49,3 +49,17 @@ export const commitRpc = defineRpc({
   input: z.object({ workspaceId: z.string(), path: z.string() }),
   output: z.object({ committed: z.boolean(), summary: z.string() }),
 });
+
+/** Reads a document's comment file (`a.md` → `a.comment.md`); empty when it does not exist. */
+export const commentsReadRpc = defineRpc({
+  name: "doc-ask.comments.read",
+  input: z.object({ path: z.string() }),
+  output: z.object({ text: z.string() }),
+});
+
+/** Writes a document's comment file if it still holds `base`, so concurrent edits are not lost. */
+export const commentsWriteRpc = defineRpc({
+  name: "doc-ask.comments.write",
+  input: z.object({ path: z.string(), text: z.string(), base: z.string() }),
+  output: z.object({ status: z.enum(["written", "conflict"]) }),
+});

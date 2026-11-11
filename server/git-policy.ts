@@ -1,7 +1,8 @@
 /**
  * Which shell commands the explainer may run while committing footnotes: single git commands
- * that read the repository, stage through `git apply --cached`, or commit what is staged. No
- * command chaining, redirection, `git add`, or commits that bypass the index or hooks.
+ * that read the repository, stage through `git apply --cached` or `git add` of comment files,
+ * or commit what is staged. No command chaining, redirection, other `git add`, or commits that
+ * bypass the index or hooks.
  */
 
 const READ_ONLY = new Set(["status", "diff", "log", "show", "rev-parse", "ls-files"]);
@@ -60,6 +61,11 @@ export function isAllowedGitCommand(command: string): boolean {
   const args = words.slice(i + 1);
   if (READ_ONLY.has(sub)) return !args.some((arg) => arg === "--output" || arg.startsWith("--output="));
   if (sub === "apply") return args.includes("--cached") && !args.includes("--index");
+  // Comment files belong to the plugin entirely, so they may be staged whole.
+  if (sub === "add") {
+    const paths = args.filter((arg) => arg !== "--");
+    return paths.length > 0 && paths.every((arg) => !arg.startsWith("-") && /\.comment\.md$/i.test(arg));
+  }
   if (sub === "commit") return commitArgsAllowed(args);
   return false;
 }

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  addFootnote,
+  annotate,
+  commentPathOf,
   buildFootnote,
   findBlockEnd,
   fromSuperscript,
@@ -62,21 +63,39 @@ test("buildFootnote indents the answer under a bold title", () => {
   );
 });
 
-test("addFootnote references the selection and appends the definition", () => {
-  const text = "# T\n\nAlpha **beta** gamma.\n\nNext.\n";
-  const from = text.indexOf("beta");
+
+test("annotate highlights and references in the document, defines in the comment file", () => {
+  const doc = "# T\n\nAlpha **beta** gamma.\n\nNext.\n";
+  const from = doc.indexOf("beta");
+  assert.deepEqual(annotate(doc, "", { from, to: from + 4 }, "질문", "왜?", "답"), {
+    doc: "# T\n\nAlpha **==beta==**[^1] gamma.\n\nNext.\n",
+    comments: "[^1]: **질문: 왜?**\n\n    답\n",
+  });
+});
+
+test("annotate numbers past labels in both files and appends to existing comments", () => {
+  const doc = "a ==x==[^1] b\n";
+  const comments = "[^1]: **설명: x**\n\n    old\n";
+  const from = doc.indexOf("b");
+  assert.deepEqual(annotate(doc, comments, { from, to: from + 1 }, "설명", "b", "new"), {
+    doc: "a ==x==[^1] ==b==[^2]\n",
+    comments: "[^1]: **설명: x**\n\n    old\n\n[^2]: **설명: b**\n\n    new\n",
+  });
+});
+
+test("annotate skips the highlight across lines and gives fenced code its own reference", () => {
+  assert.equal(annotate("one\ntwo", "", { from: 0, to: 7 }, "설명", "x", "A").doc, "one\ntwo[^1]");
   assert.equal(
-    addFootnote(text, { from, to: from + 4 }, "질문", "왜?", "답"),
-    "# T\n\nAlpha **==beta==**[^1] gamma.\n\nNext.\n\n[^1]: **질문: 왜?**\n\n    답\n",
+    annotate("```\ncode\n```\nafter", "", { from: 4, to: 8 }, "설명", "code", "A").doc,
+    "```\ncode\n```\n\n[^1]\n\nafter",
   );
 });
 
-test("addFootnote skips the highlight when the selection spans lines", () => {
-  const text = "one\ntwo";
-  assert.equal(
-    addFootnote(text, { from: 0, to: 7 }, "설명", "x", "A"),
-    "one\ntwo[^1]\n\n[^1]: **설명: x**\n\n    A\n",
-  );
+test("commentPathOf names the companion file", () => {
+  assert.equal(commentPathOf("C:/docs/plan.md"), "C:/docs/plan.comment.md");
+  assert.equal(commentPathOf("/a/b.MARKDOWN"), "/a/b.comment.md");
+  assert.equal(commentPathOf("/a/b.comment.md"), null);
+  assert.equal(commentPathOf("/a/b.txt"), null);
 });
 
 test("highlightRange widens over markup to keep delimiters balanced", () => {
@@ -87,14 +106,6 @@ test("highlightRange widens over markup to keep delimiters balanced", () => {
   assert.equal(slice(highlightRange(text, at("멱등성**(idempotency)"))), "**멱등성**(idempotency)");
   assert.equal(slice(highlightRange(text, at("과 [재시도 큐"))), "과 [재시도 큐](https://x.y/z)");
   assert.equal(highlightRange("```\ncode\n```", { from: 4, to: 8 }), null);
-});
-
-test("addFootnote gives a reference inside fenced code its own paragraph", () => {
-  const text = "```\ncode\n```\nafter";
-  assert.equal(
-    addFootnote(text, { from: 4, to: 8 }, "설명", "code", "A"),
-    "```\ncode\n```\n\n[^1]\n\nafter\n\n[^1]: **설명: code**\n\n    A\n",
-  );
 });
 
 test("prepareFootnotes renders references as superscripts and collects notes", () => {
@@ -118,12 +129,18 @@ test("prepareFootnotes renders references as superscripts and collects notes", (
   assert.ok(Number.isNaN(fromSuperscript("1")));
 });
 
-test("prepareFootnotes unwraps highlights and links them to their footnotes", () => {
-  const text = "A ==멱등성==[^1] and ==plain== but `==code==`.\n\n[^1]: note";
-  const { body, marks } = prepareFootnotes(text);
-  assert.equal(body, "A 멱등성¹ and plain but `==code==`.");
+test("prepareFootnotes wraps highlights in sentinels and links them to their footnotes", () => {
+  const text = "A ==멱등성==[^1] and ==plain== but `==code==`.";
+  const { body, marks, notes } = prepareFootnotes(text, "# 주석\n\n[^1]: note");
+  assert.equal(body, "A ⁣멱등성⁤¹ and ⁣plain⁤ but `==code==`.");
   assert.deepEqual(marks, [
     { text: "멱등성", number: 1 },
     { text: "plain", number: null },
   ]);
+  assert.deepEqual(notes, [{ label: "1", number: 1, content: "note" }]);
+});
+
+test("prepareFootnotes prefers the document's own definition over the comment file", () => {
+  const { notes } = prepareFootnotes("x[^1]\n\n[^1]: mine", "[^1]: theirs");
+  assert.equal(notes[0].content, "mine");
 });

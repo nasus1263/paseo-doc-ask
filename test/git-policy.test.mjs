@@ -26,6 +26,15 @@ test("staging goes only through git apply --cached, heredoc included", () => {
   assert.ok(!isAllowedGitCommand("git apply --cached --index p.patch"));
   assert.ok(!isAllowedGitCommand("git apply --cached - <<'PATCH'\nx\nNOPE"));
   assert.ok(!isAllowedGitCommand("git add docs/a.md"));
+  assert.ok(!isAllowedGitCommand("git add -A"));
+  assert.ok(!isAllowedGitCommand("git add -f docs/a.comment.md"));
+});
+
+test("git add is allowed only for comment files", () => {
+  assert.ok(isAllowedGitCommand("git add docs/a.comment.md"));
+  assert.ok(isAllowedGitCommand('git -C repo add -- "docs/my plan.comment.md"'));
+  assert.ok(!isAllowedGitCommand("git add docs/a.comment.md docs/a.md"));
+  assert.ok(!isAllowedGitCommand("git add"));
 });
 
 test("commits record only the index", () => {

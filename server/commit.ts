@@ -2,6 +2,7 @@ import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { commitRpc } from "../shared/explain";
 import { enqueue, residentAgent } from "./explainer";
+import { commentPathOf } from "../shared/markdown";
 import { isAllowedGitCommand } from "./git-policy";
 
 type Paseo = PluginHandlerContext["paseo"];
@@ -17,7 +18,8 @@ const COMMITTED = "결과: 커밋함";
 
 const DENIED =
   "허용되지 않은 명령이다. 각주 커밋에는 git status/diff/log/show/rev-parse/ls-files, " +
-  "git apply --cached, 인덱스만 커밋하는 git commit을 각각 단독으로(필요하면 git -C <경로>) 실행할 수 있다.";
+  "git apply --cached, 주석 파일(*.comment.md)만 대상으로 한 git add, 인덱스만 커밋하는 git commit을 " +
+  "각각 단독으로(필요하면 git -C <경로>) 실행할 수 있다.";
 
 /** Has the workspace's explainer commit only the footnote changes of one document. */
 export function commitFootnotes(input: RpcInput<typeof commitRpc>, { paseo }: PluginHandlerContext) {
@@ -63,22 +65,25 @@ function commandOf(request: PermissionRequest): string | null {
 }
 
 function buildPrompt(path: string): string {
+  const comments = commentPathOf(path) ?? "(없음)";
   return [
     "[각주 커밋 요청] 이번 요청에 한해 아래 절차의 git 명령 실행을 허용한다. 문서 해설 규칙의 '명령을 실행하지 않는다'보다 이 요청이 우선한다.",
     `대상 문서: ${path}`,
+    `주석 파일: ${comments}`,
     "",
-    "할 일: 이 문서의 작업 트리 변경 중 '문서 질문' 플러그인이 단 각주 관련 변경만 git에 커밋한다.",
-    "각주 관련 변경은 다음 세 가지다.",
-    "1. 본문에 추가된 `==…==` 하이라이트 표시",
-    "2. 본문에 추가된 `[^n]` 각주 참조",
-    "3. 문서 끝에 추가된 `[^n]: …` 각주 정의와 그 아래 들여쓴 본문, 그리고 그 앞뒤 빈 줄",
+    "할 일: '문서 질문' 플러그인이 단 각주 관련 변경만 git에 커밋한다.",
+    "각주 관련 변경은 다음과 같다.",
+    "1. 대상 문서 본문에 추가된 `==…==` 하이라이트 표시",
+    "2. 대상 문서 본문에 추가된 `[^n]` 각주 참조",
+    "3. 주석 파일 전체 (각주 정의 `[^n]: …`를 담는 플러그인 전용 파일)",
     "",
     "절차:",
     "1. 문서가 속한 저장소에서 `git -C <디렉터리> status`와 `git -C <디렉터리> diff --cached`로 확인한다. 이미 스테이징된 변경이 있거나 git 저장소가 아니면 아무것도 바꾸지 말고 중단한다.",
-    "2. `git diff -- <문서>`로 변경을 확인하고, 각주 관련 변경만 담은 패치를 만들어 `git apply --cached - <<'PATCH'` heredoc으로 스테이징한다. 한 줄에 다른 변경이 섞여 있으면 HEAD의 그 줄에 각주 관련 변경만 반영한 줄로 패치를 만든다. 각주 관련 변경이 없으면 중단한다.",
-    "3. `git diff --cached`로 스테이징 내용을 확인한 뒤 `git commit -m \"<메시지>\"`로 커밋한다. 메시지는 한국어로 '<문서 파일 이름>에 각주 추가'와 각주 주제를 짧게 요약한다.",
+    "2. `git diff -- <대상 문서>`로 변경을 확인하고, 1·2번 변경만 담은 패치를 만들어 `git apply --cached - <<'PATCH'` heredoc으로 스테이징한다. 한 줄에 다른 변경이 섞여 있으면 HEAD의 그 줄에 각주 관련 변경만 반영한 줄로 패치를 만든다.",
+    "3. 주석 파일이 있고 변경되었거나 새 파일이면 `git -C <디렉터리> add <주석 파일>`로 통째로 스테이징한다.",
+    "4. 스테이징할 각주 관련 변경이 없으면 중단한다. 있으면 `git diff --cached`로 확인한 뒤 `git commit -m \"<메시지>\"`로 커밋한다. 메시지는 한국어로 '<문서 파일 이름>에 각주 추가'와 각주 주제를 짧게 요약한다.",
     "",
-    "제약: 작업 트리 파일을 수정하지 않는다. git add, reset, checkout, restore, stash, push 등 위에 없는 명령과 명령 연결(&&, ;, |)은 쓰지 않는다. 쓰면 거부된다.",
+    "제약: 작업 트리 파일을 수정하지 않는다. 주석 파일 외의 git add, reset, checkout, restore, stash, push 등 위에 없는 명령과 명령 연결(&&, ;, |)은 쓰지 않는다. 쓰면 거부된다.",
     "",
     `답 형식: 첫 줄은 정확히 \`${COMMITTED}\` 또는 \`결과: 커밋 안 함\`. 이어서 커밋 해시와 포함한 각주, 또는 커밋하지 않은 이유를 짧게 쓴다.`,
   ].join("\n");

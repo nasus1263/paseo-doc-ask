@@ -3,7 +3,15 @@ import type { EditorState, Transaction } from "@codemirror/state";
 import type { EditorView, EditorViewConfig, Tooltip } from "@codemirror/view";
 import { Platform } from "react-native";
 import type { AskMode } from "../shared/explain";
-import { fromSuperscript, isKept, type Mark, type TextRange } from "../shared/markdown";
+import {
+  fromSuperscript,
+  isKept,
+  MARK_CLOSE,
+  MARK_OPEN,
+  type Mark,
+  superscript,
+  type TextRange,
+} from "../shared/markdown";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 interface DomEvent {
@@ -248,43 +256,84 @@ function pastReference(nodes: DomText[], index: number, offset: number): { node:
   return end;
 }
 
+interface DomPoint {
+  node: DomText;
+  offset: number;
+  /** Index of `node` among the container's text nodes. */
+  index: number;
+}
+
+/** A mark from `start` to `end`; its reference, if any, begins at `after`. */
+function located(
+  nodes: DomText[],
+  start: DomPoint,
+  end: DomPoint,
+  after: DomPoint,
+  number: number | null,
+): LocatedMark {
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  const hoverRange = document.createRange();
+  hoverRange.setStart(start.node, start.offset);
+  const hoverEnd = number === null ? end : pastReference(nodes, after.index, after.offset);
+  hoverRange.setEnd(hoverEnd.node, hoverEnd.offset);
+  return { range, hoverRange, number };
+}
+
 /**
- * Finds each mark's text in the rendered DOM, in document order, comparing only characters the
- * markup filter keeps. A mark that is not found is skipped.
+ * Finds each mark in the rendered DOM. The preview wraps marks in invisible sentinels, so each
+ * one is found exactly where it is. If the renderer dropped the sentinels, falls back to a text
+ * search that prefers the occurrence followed by the mark's own footnote number.
  */
 function locateMarks(root: DomElement, marks: readonly Mark[]): LocatedMark[] {
   if (marks.length === 0) return [];
-  let plain = "";
-  const at: { node: DomText; offset: number; index: number }[] = [];
   const nodes: DomText[] = [];
+  const opens: DomPoint[] = [];
+  const closes: DomPoint[] = [];
+  let plain = "";
+  const at: DomPoint[] = [];
   const walker = document.createTreeWalker(root, SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    nodes.push(node);
+    const index = nodes.push(node) - 1;
     const text = node.textContent ?? "";
     for (let i = 0; i < text.length; i++) {
+      if (text[i] === MARK_OPEN) opens.push({ node, offset: i + 1, index });
+      else if (text[i] === MARK_CLOSE) closes.push({ node, offset: i, index });
       if (!isKept(text[i])) continue;
       plain += text[i];
-      at.push({ node, offset: i, index: nodes.length - 1 });
+      at.push({ node, offset: i, index });
     }
   }
+
+  if (opens.length === marks.length && closes.length === marks.length) {
+    // The reference follows the close sentinel.
+    return marks.map((mark, k) =>
+      located(nodes, opens[k], closes[k], { ...closes[k], offset: closes[k].offset + 1 }, mark.number),
+    );
+  }
+
   const found: LocatedMark[] = [];
   let cursor = 0;
   for (const mark of marks) {
     const needle = [...mark.text].filter(isKept).join("");
     if (needle === "") continue;
-    const index = plain.indexOf(needle, cursor);
-    if (index === -1) continue;
-    const first = at[index];
-    const last = at[index + needle.length - 1];
-    const range = document.createRange();
-    range.setStart(first.node, first.offset);
-    range.setEnd(last.node, last.offset + 1);
-    const hoverRange = document.createRange();
-    hoverRange.setStart(first.node, first.offset);
-    const end = mark.number === null ? { node: last.node, offset: last.offset + 1 } : pastReference(nodes, last.index, last.offset + 1);
-    hoverRange.setEnd(end.node, end.offset);
-    found.push({ range, hoverRange, number: mark.number });
-    cursor = index + needle.length;
+    let chosen = -1;
+    for (let index = plain.indexOf(needle, cursor); index !== -1; index = plain.indexOf(needle, index + 1)) {
+      if (chosen === -1) chosen = index;
+      if (mark.number === null) break;
+      const last = at[index + needle.length - 1];
+      const next = (last.node.textContent ?? "").slice(last.offset + 1, last.offset + 8);
+      if (next.startsWith(superscript(mark.number))) {
+        chosen = index;
+        break;
+      }
+    }
+    if (chosen === -1) continue;
+    const last = at[chosen + needle.length - 1];
+    const end = { ...last, offset: last.offset + 1 };
+    found.push(located(nodes, at[chosen], end, end, mark.number));
+    cursor = chosen + needle.length;
   }
   return found;
 }
@@ -328,7 +377,8 @@ export function watchSelection(
   };
   const settle: DomListener = (event) => {
     const range = current();
-    const text = range?.toString() ?? "";
+    // Drop the invisible highlight sentinels the preview adds.
+    const text = (range?.toString() ?? "").split(MARK_OPEN).join("").split(MARK_CLOSE).join("");
     if (!range || text.trim() === "") return report(null);
     const before = document.createRange();
     before.selectNodeContents(root);

@@ -13,6 +13,23 @@ const INDENTED = /^( {4}|\t)/;
 const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 
 /**
+ * Invisible characters the preview puts around each highlight, so the viewer can find the exact
+ * rendered range instead of searching for the same words elsewhere.
+ */
+export const MARK_OPEN = "⁣";
+export const MARK_CLOSE = "⁤";
+
+/**
+ * The companion file holding a document's footnote definitions: `a.md` → `a.comment.md`.
+ * Null for files that are not Markdown documents or are comment files themselves.
+ */
+export function commentPathOf(path: string): string | null {
+  if (/\.comment\.md$/i.test(path)) return null;
+  const base = path.replace(/\.(md|markdown)$/i, "");
+  return base === path ? null : `${base}.comment.md`;
+}
+
+/**
  * Finds the selected passage in the latest text. Prefers the original offsets, then the
  * occurrence nearest to them. Returns null when the passage no longer exists.
  */
@@ -29,7 +46,7 @@ export function locateSelection(text: string, range: TextRange, selected: string
  * Characters that rendered Markdown drops or adds: whitespace, markup, bullets, escapes, and
  * the superscript numbers the preview draws for footnote references.
  */
-const MARKUP = /[\s*_`~#>[\]|\-+=•\\⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+const MARKUP = /[\s*_`~#>[\]|\-+=•\\⁰¹²³⁴⁵⁶⁷⁸⁹⁣⁤]/;
 
 /** Whether `ch` survives the markup filter used to match rendered text against source. */
 export function isKept(ch: string): boolean {
@@ -200,23 +217,36 @@ export function highlightRange(text: string, at: TextRange): TextRange | null {
 }
 
 /**
- * Adds a footnote for the selection `at`: highlights it with `==` when that keeps the markup
- * intact, references the footnote right after it, and appends the definition at the end.
+ * Annotates the selection `at` of `doc`: highlights it with `==` when that keeps the markup
+ * intact and references a new footnote right after it. The definition is appended to
+ * `comments`, the document's companion comment file. Labels are unique across both texts.
  */
-export function addFootnote(text: string, at: TextRange, label: string, subject: string, answer: string): string {
-  const id = nextFootnoteLabel(text);
+export function annotate(
+  doc: string,
+  comments: string,
+  at: TextRange,
+  label: string,
+  subject: string,
+  answer: string,
+): { doc: string; comments: string } {
+  const id = nextFootnoteLabel(`${doc}\n${comments}`);
   const ref = `[^${id}]`;
-  const mark = highlightRange(text, at);
+  const mark = highlightRange(doc, at);
   if (mark) {
-    text = `${text.slice(0, mark.from)}==${text.slice(mark.from, mark.to)}==${text.slice(mark.to)}`;
+    doc = `${doc.slice(0, mark.from)}==${doc.slice(mark.from, mark.to)}==${doc.slice(mark.to)}`;
     at = { from: mark.from, to: mark.to + 4 };
   }
-  const offset = referenceOffset(text, at.to);
+  const offset = referenceOffset(doc, at.to);
   const withRef =
     offset === null
-      ? insertBlock(text, findBlockEnd(text, at.to), ref)
-      : text.slice(0, offset) + ref + text.slice(offset);
-  return `${withRef.replace(/\s+$/, "")}\n\n${buildFootnote(id, label, subject, answer)}\n`;
+      ? insertBlock(doc, findBlockEnd(doc, at.to), ref)
+      : doc.slice(0, offset) + ref + doc.slice(offset);
+  const definition = buildFootnote(id, label, subject, answer);
+  const existing = comments.replace(/\s+$/, "");
+  return {
+    doc: withRef,
+    comments: existing === "" ? `${definition}\n` : `${existing}\n\n${definition}\n`,
+  };
 }
 
 export interface Footnote {
@@ -243,16 +273,10 @@ export interface Mark {
 
 const INLINE_TOKEN = /==(?=\S)([^=\n]*?\S)==(\[\^([^\]\s]+)\])?|\[\^([^\]\s]+)\]/g;
 
-/**
- * Prepares Markdown for display: removes footnote definitions, replaces references with
- * superscript numbers (numbered by first reference), and unwraps `==highlights==`. Returns the
- * body, the notes in number order (unreferenced definitions last), and the highlights in
- * document order. Fenced and inline code are left alone.
- */
-export function prepareFootnotes(text: string): { body: string; notes: Footnote[]; marks: Mark[] } {
+/** Splits footnote definitions out of `text`, adding them to `definitions`; returns the other lines. */
+function extractDefinitions(text: string, definitions: Map<string, string>): string[] {
   const lines = text.split("\n");
   const bodyLines: string[] = [];
-  const definitions = new Map<string, string>();
   let inFence = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -272,6 +296,24 @@ export function prepareFootnotes(text: string): { body: string; notes: Footnote[
     }
     definitions.set(def[1], content.join("\n").trim());
   }
+  return bodyLines;
+}
+
+/**
+ * Prepares Markdown for display: removes footnote definitions, replaces references with
+ * superscript numbers (numbered by first reference), and unwraps `==highlights==`, wrapping each
+ * in `MARK_OPEN`/`MARK_CLOSE`. Definitions come from the document and from `comments`, its
+ * comment file; the document's own win. Returns the body, the notes in number order
+ * (unreferenced definitions last), and the highlights in document order. Fenced and inline code
+ * are left alone.
+ */
+export function prepareFootnotes(
+  text: string,
+  comments = "",
+): { body: string; notes: Footnote[]; marks: Mark[] } {
+  const definitions = new Map<string, string>();
+  extractDefinitions(comments, definitions);
+  const bodyLines = extractDefinitions(text, definitions);
 
   const numbers = new Map<string, number>();
   const marks: Mark[] = [];
@@ -280,7 +322,7 @@ export function prepareFootnotes(text: string): { body: string; notes: Footnote[
     if (n === undefined) numbers.set(label, (n = numbers.size + 1));
     return n;
   };
-  inFence = false;
+  let inFence = false;
   const body = bodyLines
     .map((line) => {
       if (FENCE.test(line)) inFence = !inFence;
@@ -298,8 +340,9 @@ export function prepareFootnotes(text: string): { body: string; notes: Footnote[
                     const linked = markLabel !== undefined && definitions.has(markLabel);
                     const n = linked ? numberOf(markLabel) : null;
                     marks.push({ text: marked, number: n });
-                    if (markRef === undefined) return marked;
-                    return n === null ? marked + markRef : marked + superscript(n);
+                    const shown = MARK_OPEN + marked + MARK_CLOSE;
+                    if (markRef === undefined) return shown;
+                    return n === null ? shown + markRef : shown + superscript(n);
                   }
                   if (label === undefined || !definitions.has(label)) return match;
                   const adjacent = offset > 0 && part.slice(0, offset).endsWith("]");
