@@ -315,6 +315,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
   // preview hands over its reveal function once mounted.
   const revealRef = useRef<((number: number) => Promise<boolean>) | null>(null);
   const [jumpTarget, setJumpTarget] = useState<string | null>(null);
+  const revealTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const jumpTo = useCallback(
     (label: string) => {
       setView({ view: "preview" });
@@ -330,9 +331,18 @@ function DocAskViewer(props: PluginFilePanelProps) {
       toast.error("이 문서에서 해당 각주를 찾지 못했습니다.");
       return;
     }
-    void revealRef.current(note.number);
+    // Open the panel first: it shrinks the preview, which would cut a scroll already under way.
     openNote(note.number);
+    const reveal = revealRef.current;
+    if (revealTimer.current) clearTimeout(revealTimer.current);
+    revealTimer.current = setTimeout(() => void reveal(note.number), 150);
   }, [jumpTarget, openNote, prepared, toast, view.view]);
+  useEffect(
+    () => () => {
+      if (revealTimer.current) clearTimeout(revealTimer.current);
+    },
+    [],
+  );
   // A bookmark in another panel may have opened this file to show one of its footnotes.
   useEffect(() => {
     const pending = takeJump(file.path);
@@ -975,6 +985,7 @@ type BookmarkItem = RpcOutput<typeof bookmarksRpc>["items"][number];
  */
 function OtherDocumentBookmark({
   documentPath,
+  linkPath,
   label,
   title,
   style,
@@ -982,6 +993,8 @@ function OtherDocumentBookmark({
   children,
 }: {
   documentPath: string;
+  /** The document's path relative to the workspace root, as Paseo resolves link targets. */
+  linkPath: string;
   label: string;
   title: string;
   style: ViewStyle;
@@ -998,8 +1011,9 @@ function OtherDocumentBookmark({
       }),
     [documentPath, label, onFollow],
   );
-  // Paseo resolves absolute Windows and POSIX paths in links as workspace files.
-  const href = documentPath.replace(/\\/g, "/");
+  // Paseo resolves a relative link target against the workspace root and opens it as a file tab.
+  // An absolute Windows path ("C:/…") can be taken for a URL scheme and ignored.
+  const href = linkPath;
   const text = title.replace(/[[\]\\]/g, (ch) => `\\${ch}`);
   return (
     <View style={style}>
@@ -1130,6 +1144,7 @@ function BookmarksPopover({
             <OtherDocumentBookmark
               key={key}
               documentPath={documentPath}
+              linkPath={relative(documentPath)}
               label={item.label}
               title={title}
               style={styles.row}
