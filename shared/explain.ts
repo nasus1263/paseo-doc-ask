@@ -65,3 +65,20 @@ export const commentsWriteRpc = defineRpc({
   input: z.object({ path: z.string(), text: z.string(), base: z.string() }),
   output: z.object({ status: z.enum(["written", "conflict"]) }),
 });
+
+/** Bookmarked footnotes across the workspace's comment files. */
+export const bookmarksRpc = defineRpc({
+  name: "doc-ask.bookmarks",
+  input: z.object({ workspaceId: z.string() }),
+  output: z.object({
+    items: z.array(
+      z.object({
+        documentPath: z.string(),
+        label: z.string(),
+        title: z.string(),
+        memo: z.string().nullable(),
+        content: z.string(),
+      }),
+    ),
+  }),
+});

@@ -1,8 +1,10 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { listWorkspaceBookmarks } from "./server/bookmarks";
 import { readComments, writeComments } from "./server/comments";
 import { commitFootnotes } from "./server/commit";
 import { createExplain, resetContext } from "./server/explainer";
 import {
+  bookmarksRpc,
   commentsReadRpc,
   commentsWriteRpc,
   commitRpc,
@@ -24,5 +26,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(commitRpc, commitFootnotes);
   server.handle(commentsReadRpc, readComments);
   server.handle(commentsWriteRpc, writeComments);
+  server.handle(bookmarksRpc, listWorkspaceBookmarks);
   return () => {};
 }

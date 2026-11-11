@@ -11,10 +11,12 @@ import {
   highlightRange,
   keptLength,
   locateRendered,
+  listBookmarks,
   locateSelection,
   nextFootnoteLabel,
   prepareFootnotes,
   referenceOffset,
+  setNoteMeta,
 } from "../shared/markdown.ts";
 
 test("locateSelection keeps original offsets when text is unchanged", () => {
@@ -154,9 +156,9 @@ test("prepareFootnotes renders references as superscripts and collects notes", (
   const { body, notes } = prepareFootnotes(text);
   assert.equal(body, "One¹ two²,¹ `x[^a]`.");
   assert.deepEqual(notes, [
-    { label: "b", number: 1, content: "B" },
-    { label: "a", number: 2, content: "**A**\n\nbody a" },
-    { label: "z", number: 3, content: "unused" },
+    { label: "b", number: 1, content: "B", meta: {} },
+    { label: "a", number: 2, content: "**A**\n\nbody a", meta: {} },
+    { label: "z", number: 3, content: "unused", meta: {} },
   ]);
   assert.equal(fromSuperscript("¹²"), 12);
   assert.ok(Number.isNaN(fromSuperscript("1")));
@@ -171,7 +173,7 @@ test("prepareFootnotes wraps highlights in sentinels and links them to their foo
     { text: "a = b", number: null },
     { text: "`code`", number: null },
   ]);
-  assert.deepEqual(notes, [{ label: "1", number: 1, content: "note" }]);
+  assert.deepEqual(notes, [{ label: "1", number: 1, content: "note", meta: {} }]);
 });
 
 test("prepareFootnotes shows older highlights written inside code or emphasis outside it", () => {
@@ -201,4 +203,21 @@ test("appendToFootnote accumulates follow-ups inside the same footnote", () => {
 
 test("annotate reports the new footnote label", () => {
   assert.equal(annotate("a b", "[^4]: x", { from: 2, to: 3 }, "설명", "b", "A").id, "5");
+});
+
+test("setNoteMeta stores bookmark and memo on the definition line, hidden from content", () => {
+  const comments = "[^1]: **설명: x**\n\n    body\n\n[^2]: **설명: y**\n\n    other\n";
+  const marked = setNoteMeta(comments, "1", { bookmark: true, memo: "a --> b\n둘째 줄" });
+  assert.ok(marked.startsWith("[^1]: **설명: x** <!-- doc-ask {"));
+  assert.ok(!marked.split("\n")[0].slice(0, -4).includes("-->"), "memo cannot close the comment early");
+  const { notes } = prepareFootnotes("a[^1] b[^2]", marked);
+  assert.deepEqual(notes[0].meta, { bookmark: true, memo: "a --> b\n둘째 줄" });
+  assert.equal(notes[0].content, "**설명: x**\n\nbody");
+  assert.deepEqual(notes[1].meta, {});
+  assert.deepEqual(listBookmarks(marked), [
+    { label: "1", title: "설명: x", memo: "a --> b\n둘째 줄", content: "**설명: x**\n\nbody" },
+  ]);
+  // Clearing everything removes the comment.
+  assert.equal(setNoteMeta(marked, "1", { bookmark: false, memo: " " }), comments);
+  assert.equal(setNoteMeta(comments, "9", { bookmark: true }), null);
 });

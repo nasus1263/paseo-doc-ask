@@ -403,6 +403,7 @@ export interface Footnote {
   label: string;
   number: number;
   content: string;
+  meta: NoteMeta;
 }
 
 export function superscript(n: number): string {
@@ -440,7 +441,7 @@ function hoistLegacyMarks(line: string): string {
 }
 
 /** Splits footnote definitions out of `text`, adding them to `definitions`; returns the other lines. */
-function extractDefinitions(text: string, definitions: Map<string, string>): string[] {
+function extractDefinitions(text: string, definitions: Map<string, Definition>): string[] {
   const lines = text.split("\n");
   const bodyLines: string[] = [];
   let inFence = false;
@@ -452,7 +453,8 @@ function extractDefinitions(text: string, definitions: Map<string, string>): str
       bodyLines.push(line);
       continue;
     }
-    const content = [def[2]];
+    const { rest, meta } = splitMeta(def[2]);
+    const content = [rest];
     while (i + 1 < lines.length) {
       const next = lines[i + 1];
       if (INDENTED.test(next)) content.push(next.replace(INDENTED, ""));
@@ -460,9 +462,84 @@ function extractDefinitions(text: string, definitions: Map<string, string>): str
       else break;
       i++;
     }
-    definitions.set(def[1], content.join("\n").trim());
+    definitions.set(def[1], { content: content.join("\n").trim(), meta });
   }
   return bodyLines;
+}
+
+/** Per-footnote reader state: a bookmark and a free-form memo. */
+export interface NoteMeta {
+  bookmark?: boolean;
+  memo?: string;
+}
+
+interface Definition {
+  content: string;
+  meta: NoteMeta;
+}
+
+/**
+ * Metadata rides at the end of a definition's first line as an HTML comment, which other
+ * Markdown viewers hide: `[^1]: **설명: x** <!-- doc-ask {"bookmark":true} -->`.
+ */
+const META = /\s*<!-- doc-ask (\{.*\}) -->\s*$/;
+
+function splitMeta(firstLine: string): { rest: string; meta: NoteMeta } {
+  const match = META.exec(firstLine);
+  if (!match) return { rest: firstLine, meta: {} };
+  let meta: NoteMeta = {};
+  try {
+    const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+    meta = {
+      bookmark: parsed.bookmark === true ? true : undefined,
+      memo: typeof parsed.memo === "string" && parsed.memo.trim() !== "" ? parsed.memo : undefined,
+    };
+  } catch {
+    // Unreadable metadata is ignored, not shown.
+  }
+  return { rest: firstLine.slice(0, match.index), meta };
+}
+
+function encodeMeta(meta: NoteMeta): string {
+  const clean: NoteMeta = {};
+  if (meta.bookmark) clean.bookmark = true;
+  if (meta.memo?.trim()) clean.memo = meta.memo.trim();
+  if (!clean.bookmark && !clean.memo) return "";
+  // Escape characters that could end the HTML comment early.
+  const json = JSON.stringify(clean).replace(/>/g, "\\u003e").replace(/-/g, "\\u002d");
+  return ` <!-- doc-ask ${json} -->`;
+}
+
+/** Sets footnote `label`'s metadata in `text`; null when `text` does not define it. */
+export function setNoteMeta(text: string, label: string, meta: NoteMeta): string | null {
+  const lines = text.split("\n");
+  const span = definitionSpan(lines, label);
+  if (!span) return null;
+  lines[span.first] = lines[span.first].replace(META, "") + encodeMeta(meta);
+  return lines.join("\n");
+}
+
+/** A bookmarked footnote of a comment file, for the workspace bookmark list. */
+export interface Bookmark {
+  label: string;
+  /** The footnote's first line without its bold markers, such as "설명: Team Create". */
+  title: string;
+  memo: string | null;
+  content: string;
+}
+
+/** The bookmarked footnotes defined in `text`. */
+export function listBookmarks(text: string): Bookmark[] {
+  const definitions = new Map<string, Definition>();
+  extractDefinitions(text, definitions);
+  return [...definitions]
+    .filter(([, definition]) => definition.meta.bookmark)
+    .map(([label, definition]) => ({
+      label,
+      title: (definition.content.split("\n")[0] ?? "").replace(/\*\*/g, "").trim(),
+      memo: definition.meta.memo ?? null,
+      content: definition.content,
+    }));
 }
 
 /**
@@ -477,7 +554,7 @@ export function prepareFootnotes(
   text: string,
   comments = "",
 ): { body: string; notes: Footnote[]; marks: Mark[] } {
-  const definitions = new Map<string, string>();
+  const definitions = new Map<string, Definition>();
   extractDefinitions(comments, definitions);
   const bodyLines = extractDefinitions(text, definitions);
 
@@ -529,7 +606,8 @@ export function prepareFootnotes(
   const notes = [...numbers].map(([label, number]) => ({
     label,
     number,
-    content: definitions.get(label) ?? "",
+    content: definitions.get(label)?.content ?? "",
+    meta: definitions.get(label)?.meta ?? {},
   }));
   return { body, notes, marks };
 }

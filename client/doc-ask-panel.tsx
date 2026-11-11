@@ -7,12 +7,15 @@ import {
   useRpc,
   useSettings,
   useTabState,
+  useWorkspace,
 } from "@getpaseo/plugin/client";
+import type { RpcOutput } from "@getpaseo/plugin";
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import {
   type AskMode,
+  bookmarksRpc,
   commentsReadRpc,
   commentsWriteRpc,
   commitRpc,
@@ -31,7 +34,9 @@ import {
   locateRendered,
   locateSelection,
   type Mark,
+  type NoteMeta,
   prepareFootnotes,
+  setNoteMeta,
   type TextRange,
 } from "../shared/markdown";
 import {
@@ -270,6 +275,40 @@ function DocAskViewer(props: PluginFilePanelProps) {
     if (note) setMessage({ kind: "note", title: "", status: `각주 ${number}`, answer: null, note: note.label });
   }, []);
 
+  /** Rewrites footnote `label`'s bookmark and memo in whichever file defines it. */
+  const updateMeta = useCallback(
+    async (label: string, change: (meta: NoteMeta) => NoteMeta) => {
+      try {
+        const [latest, latestComments] = await Promise.all([file.readText(), loadComments()]);
+        const inComments = hasCommentFile && definesFootnote(latestComments, label);
+        const current = notesRef.current.find((n) => n.label === label)?.meta ?? {};
+        const next = setNoteMeta(inComments ? latestComments : latest, label, change(current));
+        if (next === null) {
+          toast.error("이 각주를 찾지 못했습니다.");
+          return false;
+        }
+        if (inComments) {
+          const { status } = await writeComments({ path: file.path, text: next, base: latestComments });
+          if (status === "conflict") {
+            toast.error("저장 실패: 주석 파일이 그사이 변경되었습니다. 다시 시도해 주세요.");
+            return false;
+          }
+          setComments(next);
+        } else {
+          await file.writeText(next);
+          show(next);
+        }
+        return true;
+      } catch (cause) {
+        toast.error(writeFailure(cause));
+        return false;
+      }
+    },
+    [file, hasCommentFile, loadComments, show, toast, writeComments],
+  );
+  const [memoLabel, setMemoLabel] = useState<string | null>(null);
+  const [bookmarksOpen, setBookmarksOpen] = useState(false);
+
   const onAction = useCallback(
     (anchor: Anchor, mode: AskMode) => {
       if (mode === "question") setQuestionAnchor(anchor);
@@ -370,6 +409,13 @@ function DocAskViewer(props: PluginFilePanelProps) {
         <View style={styles.spacer} />
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="워크스페이스 북마크 목록"
+          onPress={() => setBookmarksOpen(true)}
+        >
+          <Text style={styles.tab}>북마크</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
           accessibilityLabel="이 문서의 각주 변경만 git 커밋"
           disabled={committing}
           onPress={commitFootnotes}
@@ -415,7 +461,9 @@ function DocAskViewer(props: PluginFilePanelProps) {
           message={message}
           theme={theme}
           maxHeight={Math.max(MESSAGE_MIN_HEIGHT, rootHeight * 0.85)}
-          noteContent={message.note === undefined ? undefined : prepared?.notes.find((n) => n.label === message.note)?.content}
+          note={message.note === undefined ? undefined : prepared?.notes.find((n) => n.label === message.note)}
+          onToggleBookmark={(label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark }))}
+          onEditMemo={setMemoLabel}
           onAction={onAction}
           onClose={() => setMessage(null)}
         />
@@ -446,6 +494,26 @@ function DocAskViewer(props: PluginFilePanelProps) {
         }}
       />
       <PromptModal open={promptOpen} theme={theme} onClose={() => setPromptOpen(false)} />
+      <MemoModal
+        memo={memoLabel === null ? null : (prepared?.notes.find((n) => n.label === memoLabel)?.meta.memo ?? "")}
+        theme={theme}
+        onClose={() => setMemoLabel(null)}
+        onSave={async (memo) => {
+          if (memoLabel !== null && (await updateMeta(memoLabel, (meta) => ({ ...meta, memo })))) setMemoLabel(null);
+        }}
+      />
+      <BookmarksModal
+        open={bookmarksOpen}
+        workspaceId={workspaceId}
+        currentPath={file.path}
+        theme={theme}
+        onClose={() => setBookmarksOpen(false)}
+        onOpenHere={(label) => {
+          const note = notesRef.current.find((n) => n.label === label);
+          if (note) openNote(note.number);
+          setBookmarksOpen(false);
+        }}
+      />
     </View>
   );
 }
@@ -607,7 +675,12 @@ function FootnoteTooltip({
       onHoverIn={() => onHoverChange(true)}
       onHoverOut={() => onHoverChange(false)}
     >
-      <ScrollView contentContainerStyle={{ padding: 12 }}>
+      <ScrollView contentContainerStyle={{ padding: 12, gap: 6 }}>
+        {note.meta.memo ? (
+          <Text style={{ color: theme.colors.foregroundMuted }} numberOfLines={3}>
+            메모: {note.meta.memo}
+          </Text>
+        ) : null}
         <Markdown>{note.content}</Markdown>
       </ScrollView>
     </Pressable>
@@ -638,7 +711,10 @@ function FootnoteList({ notes, theme }: { notes: Footnote[]; theme: Theme }) {
       <Text style={styles.heading}>각주</Text>
       {notes.map((note) => (
         <View key={note.label} style={styles.row}>
-          <Text style={styles.number}>{note.number}.</Text>
+          <Text style={styles.number}>
+            {note.meta.bookmark ? "★" : ""}
+            {note.number}.
+          </Text>
           <View style={styles.body}>
             <Markdown>{note.content}</Markdown>
           </View>
@@ -784,6 +860,184 @@ function PromptModal({ open, theme, onClose }: { open: boolean; theme: Theme; on
   );
 }
 
+/** Edits one footnote's memo; `memo` is null while closed. */
+function MemoModal({
+  memo,
+  theme,
+  onClose,
+  onSave,
+}: {
+  memo: string | null;
+  theme: Theme;
+  onClose: () => void;
+  onSave: (memo: string) => Promise<void>;
+}) {
+  const open = memo !== null;
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open) setDraft(memo ?? "");
+    // Seed once per opening; a later file reload must not overwrite typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const styles = useMemo(() => modalStyles(theme), [theme]);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(draft);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title="메모" open={open} onOpenChange={(next) => !next && onClose()}>
+      <Modal.Content>
+        <Text style={styles.muted}>이 각주에 남길 메모입니다. 비우고 저장하면 지워집니다.</Text>
+        <TextInput
+          autoFocus
+          multiline
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="메모"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          style={[styles.input, { minHeight: 100, textAlignVertical: "top" }]}
+        />
+        <View style={styles.buttons}>
+          <Pressable accessibilityRole="button" onPress={onClose}>
+            <Text style={styles.secondary}>취소</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" disabled={saving} onPress={save} style={styles.primary}>
+            <Text style={styles.primaryLabel}>{saving ? "저장 중…" : "저장"}</Text>
+          </Pressable>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
+type BookmarkItem = RpcOutput<typeof bookmarksRpc>["items"][number];
+
+function samePath(a: string, b: string): boolean {
+  const normal = (path: string) => path.replace(/\\/g, "/").toLowerCase();
+  return normal(a) === normal(b);
+}
+
+/**
+ * Bookmarked footnotes of every document in the workspace, grouped by document. A bookmark of
+ * the open document opens in the message panel; others expand in place, since plugins cannot
+ * open file tabs.
+ */
+function BookmarksModal({
+  open,
+  workspaceId,
+  currentPath,
+  theme,
+  onClose,
+  onOpenHere,
+}: {
+  open: boolean;
+  workspaceId: string;
+  currentPath: string;
+  theme: Theme;
+  onClose: () => void;
+  onOpenHere: (label: string) => void;
+}) {
+  const list = useRpc(bookmarksRpc);
+  const toast = useToast();
+  const directory = useWorkspace(workspaceId, (workspace) => workspace?.directory ?? null);
+  const [state, setState] = useState<{ items: BookmarkItem[] } | { error: string } | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    setState(null);
+    setExpanded(null);
+    list({ workspaceId })
+      .then((result) => live && setState(result))
+      .catch((cause) => live && setState({ error: messageOf(cause) }));
+    return () => {
+      live = false;
+    };
+  }, [list, open, workspaceId]);
+
+  const styles = useMemo(
+    () => ({
+      ...modalStyles(theme),
+      group: { gap: 6 },
+      path: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      row: { paddingVertical: 6, gap: 2 },
+      title: { color: theme.colors.foreground, fontWeight: "600" as const },
+      memo: { color: theme.colors.foregroundMuted },
+      detail: { paddingLeft: 12, gap: 8 },
+    }),
+    [theme],
+  );
+  const relative = (path: string) => {
+    const base = directory?.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normal = path.replace(/\\/g, "/");
+    return base && normal.toLowerCase().startsWith(`${base.toLowerCase()}/`) ? normal.slice(base.length + 1) : normal;
+  };
+
+  let body;
+  if (state === null) body = <Text style={styles.muted}>찾는 중…</Text>;
+  else if ("error" in state) body = <Text style={styles.danger}>목록을 불러오지 못했습니다: {state.error}</Text>;
+  else if (state.items.length === 0) body = <Text style={styles.muted}>이 워크스페이스에 북마크한 각주가 없습니다.</Text>;
+  else {
+    const groups = new Map<string, BookmarkItem[]>();
+    for (const item of state.items) groups.set(item.documentPath, [...(groups.get(item.documentPath) ?? []), item]);
+    body = [...groups].map(([documentPath, items]) => (
+      <View key={documentPath} style={styles.group}>
+        <Text style={styles.path}>
+          {relative(documentPath)}
+          {samePath(documentPath, currentPath) ? " (현재 문서)" : ""}
+        </Text>
+        {items.map((item) => {
+          const key = `${documentPath}#${item.label}`;
+          const here = samePath(documentPath, currentPath);
+          return (
+            <View key={key}>
+              <Pressable
+                accessibilityRole="button"
+                style={styles.row}
+                onPress={() => (here ? onOpenHere(item.label) : setExpanded(expanded === key ? null : key))}
+              >
+                <Text style={styles.title}>★ {item.title || `각주 ${item.label}`}</Text>
+                {item.memo ? (
+                  <Text style={styles.memo} numberOfLines={2}>
+                    메모: {item.memo}
+                  </Text>
+                ) : null}
+              </Pressable>
+              {expanded === key ? (
+                <View style={styles.detail}>
+                  <Markdown>{item.content}</Markdown>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() =>
+                      void copyText(documentPath).then(
+                        () => toast.show("문서 경로를 복사했습니다.", { variant: "success" }),
+                        () => toast.error("복사하지 못했습니다."),
+                      )
+                    }
+                  >
+                    <Text style={styles.secondary}>문서 경로 복사</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    ));
+  }
+
+  return (
+    <Modal title="북마크" open={open} onOpenChange={(next) => !next && onClose()}>
+      <Modal.Content>{body}</Modal.Content>
+    </Modal>
+  );
+}
+
 function modalStyles(theme: Theme) {
   return {
     muted: { color: theme.colors.foregroundMuted },
@@ -813,23 +1067,28 @@ function MessageBox({
   message,
   theme,
   maxHeight,
-  noteContent,
+  note,
   onAction,
+  onToggleBookmark,
+  onEditMemo,
   onClose,
 }: {
   message: Message;
   theme: Theme;
   maxHeight: number;
-  /** Current content of the footnote the message is about, if any. */
-  noteContent: string | undefined;
+  /** The footnote the message is about, with its current content, if any. */
+  note: Footnote | undefined;
   onAction: (anchor: Anchor, mode: AskMode) => void;
+  onToggleBookmark: (label: string) => void;
+  onEditMemo: (label: string) => void;
   onClose: () => void;
 }) {
   const toast = useToast();
   // A footnote shows its latest content, which accumulates follow-ups; a failed save shows the
   // answer that could not be stored.
-  const showsNote = message.note !== undefined && noteContent !== undefined && message.kind !== "failed";
-  const body = showsNote ? noteContent : message.answer;
+  const showsNote = message.note !== undefined && note !== undefined && message.kind !== "failed";
+  const body = showsNote ? note.content : message.answer;
+  const memo = showsNote ? note.meta.memo : undefined;
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
@@ -902,6 +1161,15 @@ function MessageBox({
         backgroundColor: theme.colors.accent,
       },
       buttonLabel: { color: theme.colors.accentForeground },
+      memo: {
+        borderLeftWidth: 3,
+        borderLeftColor: theme.colors.accent,
+        paddingLeft: 10,
+        paddingVertical: 4,
+        gap: 2,
+      },
+      memoLabel: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      memoText: { color: theme.colors.foreground },
     }),
     [theme, message.kind],
   );
@@ -925,6 +1193,20 @@ function MessageBox({
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Text style={styles.status}>{status}</Text>
+          {showsNote ? (
+            <>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={note.meta.bookmark ? "북마크 해제" : "북마크"}
+                onPress={() => onToggleBookmark(note.label)}
+              >
+                <Text style={styles.action}>{note.meta.bookmark ? "★ 북마크" : "☆ 북마크"}</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="메모 편집" onPress={() => onEditMemo(note.label)}>
+                <Text style={styles.action}>메모</Text>
+              </Pressable>
+            </>
+          ) : null}
           {answer ? (
             <Pressable accessibilityRole="button" accessibilityLabel="내용 복사" onPress={copyAnswer}>
               <Text style={styles.action}>복사</Text>
@@ -936,6 +1218,14 @@ function MessageBox({
             </Pressable>
           ) : null}
         </View>
+        {memo ? (
+          <View style={styles.memo}>
+            <Text style={styles.memoLabel}>메모</Text>
+            <Text selectable style={styles.memoText}>
+              {memo}
+            </Text>
+          </View>
+        ) : null}
         {/* A footnote starts with its own bold title. */}
         {message.title && !showsNote ? (
           <Text style={styles.quote} numberOfLines={2}>
