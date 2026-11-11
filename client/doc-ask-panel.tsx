@@ -52,6 +52,7 @@ import {
   watchVerticalDrag,
 } from "./web";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
+import { useLinkedMarkdown } from "./links";
 
 type Theme = PluginFilePanelProps["theme"];
 
@@ -111,6 +112,8 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const hasCommentFile = commentPathOf(file.path) !== null;
   const [comments, setComments] = useState("");
   const prepared = useMemo(() => (text === null ? null : prepareFootnotes(text, comments)), [text, comments]);
+  const workspaceDirectory = useWorkspace(workspaceId, (workspace) => workspace?.directory ?? null);
+  const linkedBody = useLinkedMarkdown(prepared?.body ?? null, file.path, workspaceDirectory);
 
   const show = useCallback((next: string) => {
     latestText.current = next;
@@ -490,7 +493,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
         loadError ? null : <Loading />
       ) : view.view === "preview" ? (
         <PreviewView
-          body={prepared.body}
+          body={linkedBody ?? prepared.body}
           notes={prepared.notes}
           marks={prepared.marks}
           theme={theme}

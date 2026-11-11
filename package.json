@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/markdown.test.mjs test/git-policy.test.mjs"
+    "test": "node --test test/markdown.test.mjs test/git-policy.test.mjs test/links.test.mjs"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.15.4",

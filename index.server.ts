@@ -3,6 +3,7 @@ import { listWorkspaceBookmarks } from "./server/bookmarks";
 import { readComments, writeComments } from "./server/comments";
 import { commitFootnotes } from "./server/commit";
 import { createExplain, resetContext } from "./server/explainer";
+import { resolveLinks } from "./server/links";
 import {
   bookmarksRpc,
   commentsReadRpc,
@@ -13,6 +14,7 @@ import {
   promptSettings,
   resetRpc,
 } from "./shared/explain";
+import { resolveLinksRpc } from "./shared/links";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(layoutSettings);
@@ -27,5 +29,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(commentsReadRpc, readComments);
   server.handle(commentsWriteRpc, writeComments);
   server.handle(bookmarksRpc, listWorkspaceBookmarks);
+  server.handle(resolveLinksRpc, resolveLinks);
   return () => {};
 }
