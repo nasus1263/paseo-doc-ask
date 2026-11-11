@@ -7,6 +7,7 @@ import type { TextRange } from "../shared/markdown";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 interface DomEvent {
+  type: string;
   clientX: number;
   clientY: number;
   preventDefault(): void;
@@ -135,9 +136,13 @@ export interface RenderedSelection {
   left: number;
 }
 
+/** Approximate width of the floating action buttons, to keep them inside the container. */
+const ACTIONS_WIDTH = 120;
+
 /**
  * Reports selections inside `container` after the mouse or keyboard settles, and null when the
- * selection collapses or leaves it. Returns the unsubscribe function.
+ * selection collapses or leaves it. A mouse selection places the buttons where the drag ended.
+ * Returns the unsubscribe function.
  */
 export function watchSelection(
   container: unknown,
@@ -151,25 +156,46 @@ export function watchSelection(
     const range = selection.getRangeAt(0);
     return root.contains(range.commonAncestorContainer) ? range : null;
   };
-  const settle = () => {
+  // The selection last reported; an unchanged selection keeps its button position, so pressing
+  // a button (which also fires mouseup) never moves the buttons out from under the pointer.
+  let lastKey: string | null = null;
+  const report = (selection: RenderedSelection | null) => {
+    lastKey = selection ? `${selection.prefix.length}:${selection.text}` : null;
+    onChange(selection);
+  };
+  const settle: DomListener = (event) => {
     const range = current();
     const text = range?.toString() ?? "";
-    if (!range || text.trim() === "") return onChange(null);
+    if (!range || text.trim() === "") return report(null);
     const before = document.createRange();
     before.selectNodeContents(root);
     before.setEnd(range.startContainer, range.startOffset);
-    const rects = range.getClientRects();
-    const end = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+    const prefix = before.toString();
+    if (`${prefix.length}:${text}` === lastKey) return;
     const box = root.getBoundingClientRect();
-    onChange({
+    let x: number;
+    let y: number;
+    if (event.type === "mouseup") {
+      // Where the drag ended.
+      x = event.clientX;
+      y = event.clientY + 12;
+    } else {
+      // Keyboard selection: the end of the selected text.
+      const rects = range.getClientRects();
+      const end = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      x = end.right;
+      y = end.bottom + 6;
+    }
+    const maxLeft = Math.max(0, box.right - box.left - ACTIONS_WIDTH);
+    report({
       text,
-      prefix: before.toString(),
-      top: end.bottom - box.top + 6,
-      left: Math.max(0, end.right - box.left - 120),
+      prefix,
+      top: y - box.top,
+      left: Math.min(maxLeft, Math.max(0, x - box.left - 8)),
     });
   };
   const collapse = () => {
-    if (!current()) onChange(null);
+    if (!current()) report(null);
   };
   document.addEventListener("mouseup", settle);
   document.addEventListener("keyup", settle);
