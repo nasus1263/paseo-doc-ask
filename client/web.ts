@@ -22,8 +22,8 @@ interface DomEvent {
 }
 type DomListener = (event: DomEvent) => void;
 interface DomEvents {
-  addEventListener(type: string, listener: DomListener): void;
-  removeEventListener(type: string, listener: DomListener): void;
+  addEventListener(type: string, listener: DomListener, capture?: boolean): void;
+  removeEventListener(type: string, listener: DomListener, capture?: boolean): void;
 }
 interface DomButton extends DomEvents {
   className: string;
@@ -47,6 +47,7 @@ interface DomElement extends DomEvents {
 interface DomText {
   nodeType: number;
   textContent: string | null;
+  parentElement: { scrollIntoView(options: { block: string; behavior: string }): void } | null;
 }
 interface DomRange {
   startContainer: unknown;
@@ -117,8 +118,16 @@ export interface FootnoteHover {
 export interface PreviewDecorations {
   /** Paints `marks` (in document order) as highlights; linked marks show their note on hover. */
   setMarks(marks: readonly Mark[]): void;
+  /**
+   * Scrolls footnote `number` into view, at its highlight or else its superscript, and flashes
+   * it. Waits for a pending repaint. Reports whether it was found.
+   */
+  reveal(number: number): Promise<boolean>;
   dispose(): void;
 }
+
+const FLASH_COLOR = "rgba(255, 170, 0, 0.75)";
+const FLASH_MS = 1400;
 
 let decorationCount = 0;
 
@@ -134,7 +143,7 @@ export function decoratePreview(
   onHover: (hover: FootnoteHover | null) => void,
   onOpen: (number: number) => void,
 ): PreviewDecorations {
-  const none: PreviewDecorations = { setMarks() {}, dispose() {} };
+  const none: PreviewDecorations = { setMarks() {}, reveal: async () => false, dispose() {} };
   if (Platform.OS !== "web" || !container || !overlay) return none;
   const root = container as DomElement;
   const overlayElement = overlay as DomElement;
@@ -149,12 +158,55 @@ export function decoratePreview(
   let painted: LocatedMark[] = [];
   let frame = 0;
 
+  // Reveals wait for the next paint so they see the newest DOM.
+  let afterPaint: (() => void)[] = [];
   const paint = () => {
     frame = 0;
     painted = locateMarks(root, marks);
+    if (registry && globals.Highlight) {
+      if (painted.length === 0) registry.delete(name);
+      else registry.set(name, new globals.Highlight(...painted.map((mark) => mark.range)));
+    }
+    const waiting = afterPaint;
+    afterPaint = [];
+    for (const run of waiting) run();
+  };
+
+  const flashName = `${name}-flash`;
+  style.textContent += ` ::highlight(${flashName}) { background-color: ${FLASH_COLOR}; }`;
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  const flash = (range: DomRange) => {
     if (!registry || !globals.Highlight) return;
-    if (painted.length === 0) registry.delete(name);
-    else registry.set(name, new globals.Highlight(...painted.map((mark) => mark.range)));
+    registry.set(flashName, new globals.Highlight(range));
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => registry.delete(flashName), FLASH_MS);
+  };
+  /** The footnote's highlight, or else its first superscript reference. */
+  const rangeOf = (number: number): DomRange | null => {
+    const mark = painted.find((m) => m.number === number);
+    if (mark) return mark.range;
+    const target = superscript(number);
+    const walker = document.createTreeWalker(root, SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? "";
+      for (let i = text.indexOf(target); i !== -1; i = text.indexOf(target, i + 1)) {
+        // The whole run must be this number, not part of a longer one.
+        if (SUPERSCRIPT_DIGIT.test(text[i - 1] ?? "") || SUPERSCRIPT_DIGIT.test(text[i + target.length] ?? "")) continue;
+        const range = document.createRange();
+        range.setStart(node, i);
+        range.setEnd(node, i + target.length);
+        return range;
+      }
+    }
+    return null;
+  };
+  const revealNow = (number: number) => {
+    const range = rangeOf(number);
+    const element = (range?.startContainer as DomText | undefined)?.parentElement;
+    if (!range || !element) return false;
+    element.scrollIntoView({ block: "center", behavior: "smooth" });
+    flash(range);
+    return true;
   };
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(paint);
@@ -235,6 +287,10 @@ export function decoratePreview(
       marks = next;
       schedule();
     },
+    reveal(number) {
+      if (!frame) return Promise.resolve(revealNow(number));
+      return new Promise((resolve) => afterPaint.push(() => resolve(revealNow(number))));
+    },
     dispose() {
       observer.disconnect();
       if (frame) cancelAnimationFrame(frame);
@@ -242,6 +298,10 @@ export function decoratePreview(
       root.removeEventListener("mouseleave", leave);
       root.removeEventListener("click", click);
       registry?.delete(name);
+      registry?.delete(flashName);
+      if (flashTimer) clearTimeout(flashTimer);
+      for (const run of afterPaint) run();
+      afterPaint = [];
       style.remove();
     },
   };
@@ -612,4 +672,16 @@ export function watchVerticalDrag(
     element.removeEventListener("mousedown", down);
     stop();
   };
+}
+
+/**
+ * Calls `handler` on every click inside `node` before the clicked element handles it, so a
+ * link's own navigation still runs afterwards. Returns the cleanup.
+ */
+export function onClickCapture(node: unknown, handler: () => void): () => void {
+  if (Platform.OS !== "web" || !node) return () => {};
+  const element = node as DomElement;
+  const listener: DomListener = () => handler();
+  element.addEventListener("click", listener, true);
+  return () => element.removeEventListener("click", listener, true);
 }

@@ -11,7 +11,7 @@ import {
 } from "@getpaseo/plugin/client";
 import type { RpcOutput } from "@getpaseo/plugin";
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type MutableRefObject, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import {
   type AskMode,
@@ -46,10 +46,12 @@ import {
   type FootnoteHover,
   keepSelectionOnPress,
   mountViewer,
+  onClickCapture,
   type RenderedSelection,
   watchSelection,
   watchVerticalDrag,
 } from "./web";
+import { onJumpRequest, requestJump, takeJump } from "./jumps";
 
 type Theme = PluginFilePanelProps["theme"];
 
@@ -309,6 +311,41 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const [memoLabel, setMemoLabel] = useState<string | null>(null);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
 
+  // Jumps: show the preview, scroll footnote `label` into view, and open it in the panel. The
+  // preview hands over its reveal function once mounted.
+  const revealRef = useRef<((number: number) => Promise<boolean>) | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
+  const jumpTo = useCallback(
+    (label: string) => {
+      setView({ view: "preview" });
+      setJumpTarget(label);
+    },
+    [setView],
+  );
+  useEffect(() => {
+    if (jumpTarget === null || !prepared || view.view !== "preview" || !revealRef.current) return;
+    setJumpTarget(null);
+    const note = prepared.notes.find((n) => n.label === jumpTarget);
+    if (!note) {
+      toast.error("이 문서에서 해당 각주를 찾지 못했습니다.");
+      return;
+    }
+    void revealRef.current(note.number);
+    openNote(note.number);
+  }, [jumpTarget, openNote, prepared, toast, view.view]);
+  // A bookmark in another panel may have opened this file to show one of its footnotes.
+  useEffect(() => {
+    const pending = takeJump(file.path);
+    if (pending) jumpTo(pending);
+    return onJumpRequest(file.path, () => {
+      // Let Paseo switch to this tab first.
+      setTimeout(() => {
+        const label = takeJump(file.path);
+        if (label) jumpTo(label);
+      }, 300);
+    });
+  }, [file, jumpTo]);
+
   const onAction = useCallback(
     (anchor: Anchor, mode: AskMode) => {
       if (mode === "question") setQuestionAnchor(anchor);
@@ -451,6 +488,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
           overlay={root}
           onHover={onHover}
           onOpenNote={openNote}
+          revealRef={revealRef}
           onAction={onAction}
         />
       ) : (
@@ -509,9 +547,8 @@ function DocAskViewer(props: PluginFilePanelProps) {
         theme={theme}
         onClose={() => setBookmarksOpen(false)}
         onOpenHere={(label) => {
-          const note = notesRef.current.find((n) => n.label === label);
-          if (note) openNote(note.number);
           setBookmarksOpen(false);
+          jumpTo(label);
         }}
       />
     </View>
@@ -542,6 +579,8 @@ interface PreviewProps {
   overlay: RefObject<View | null>;
   onHover: (hover: FootnoteHover | null) => void;
   onOpenNote: (number: number) => void;
+  /** Receives the preview's reveal function while it is mounted. */
+  revealRef: MutableRefObject<((number: number) => Promise<boolean>) | null>;
   onAction: (anchor: Anchor, mode: AskMode) => void;
 }
 
@@ -549,7 +588,18 @@ interface PreviewProps {
  * Paseo's own Markdown rendering. Highlights and superscript references show their footnote on
  * hover, the notes are listed at the end, and selections get floating ask buttons.
  */
-function PreviewView({ body, notes, marks, theme, compact, overlay, onHover, onOpenNote, onAction }: PreviewProps) {
+function PreviewView({
+  body,
+  notes,
+  marks,
+  theme,
+  compact,
+  overlay,
+  onHover,
+  onOpenNote,
+  revealRef,
+  onAction,
+}: PreviewProps) {
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
@@ -568,12 +618,14 @@ function PreviewView({ body, notes, marks, theme, compact, overlay, onHover, onO
       (hover) => onHoverRef.current(hover),
       (number) => onOpenRef.current(number),
     );
+    revealRef.current = (number) => decorations.current?.reveal(number) ?? Promise.resolve(false);
     return () => {
+      revealRef.current = null;
       decorations.current?.dispose();
       decorations.current = null;
       onHoverRef.current(null);
     };
-  }, [overlay]);
+  }, [overlay, revealRef]);
   useEffect(() => {
     decorations.current?.setMarks(marks);
   }, [marks]);
@@ -917,6 +969,49 @@ function MemoModal({
 
 type BookmarkItem = RpcOutput<typeof bookmarksRpc>["items"][number];
 
+/**
+ * A bookmark of another document, drawn as a Markdown file link so Paseo opens that file in a
+ * tab. Clicking first records the jump, which the opened panel takes.
+ */
+function OtherDocumentBookmark({
+  documentPath,
+  label,
+  title,
+  style,
+  onFollow,
+  children,
+}: {
+  documentPath: string;
+  label: string;
+  title: string;
+  style: ViewStyle;
+  onFollow: () => void;
+  children: ReactNode;
+}) {
+  const row = useRef<View>(null);
+  useEffect(
+    () =>
+      onClickCapture(row.current, () => {
+        requestJump(documentPath, label);
+        // Close after the link has handled this click.
+        setTimeout(onFollow, 0);
+      }),
+    [documentPath, label, onFollow],
+  );
+  // Paseo resolves absolute Windows and POSIX paths in links as workspace files.
+  const href = documentPath.replace(/\\/g, "/");
+  const text = title.replace(/[[\]\\]/g, (ch) => `\\${ch}`);
+  return (
+    <View style={style}>
+      {/* Only the link records the jump; clicking the memo does nothing. */}
+      <View ref={row}>
+        <Markdown>{`[${text}](<${href}>)`}</Markdown>
+      </View>
+      {children}
+    </View>
+  );
+}
+
 function samePath(a: string, b: string): boolean {
   const normal = (path: string) => path.replace(/\\/g, "/").toLowerCase();
   return normal(a) === normal(b);
@@ -943,15 +1038,12 @@ function BookmarksModal({
   onOpenHere: (label: string) => void;
 }) {
   const list = useRpc(bookmarksRpc);
-  const toast = useToast();
   const directory = useWorkspace(workspaceId, (workspace) => workspace?.directory ?? null);
   const [state, setState] = useState<{ items: BookmarkItem[] } | { error: string } | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
     let live = true;
     setState(null);
-    setExpanded(null);
     list({ workspaceId })
       .then((result) => live && setState(result))
       .catch((cause) => live && setState({ error: messageOf(cause) }));
@@ -968,7 +1060,6 @@ function BookmarksModal({
       row: { paddingVertical: 6, gap: 2 },
       title: { color: theme.colors.foreground, fontWeight: "600" as const },
       memo: { color: theme.colors.foregroundMuted },
-      detail: { paddingLeft: 12, gap: 8 },
     }),
     [theme],
   );
@@ -993,38 +1084,31 @@ function BookmarksModal({
         </Text>
         {items.map((item) => {
           const key = `${documentPath}#${item.label}`;
-          const here = samePath(documentPath, currentPath);
-          return (
-            <View key={key}>
-              <Pressable
-                accessibilityRole="button"
-                style={styles.row}
-                onPress={() => (here ? onOpenHere(item.label) : setExpanded(expanded === key ? null : key))}
-              >
-                <Text style={styles.title}>★ {item.title || `각주 ${item.label}`}</Text>
-                {item.memo ? (
-                  <Text style={styles.memo} numberOfLines={2}>
-                    메모: {item.memo}
-                  </Text>
-                ) : null}
+          const title = `★ ${item.title || `각주 ${item.label}`}`;
+          const memo = item.memo ? (
+            <Text style={styles.memo} numberOfLines={2}>
+              메모: {item.memo}
+            </Text>
+          ) : null;
+          if (samePath(documentPath, currentPath)) {
+            return (
+              <Pressable key={key} accessibilityRole="button" style={styles.row} onPress={() => onOpenHere(item.label)}>
+                <Text style={styles.title}>{title}</Text>
+                {memo}
               </Pressable>
-              {expanded === key ? (
-                <View style={styles.detail}>
-                  <Markdown>{item.content}</Markdown>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() =>
-                      void copyText(documentPath).then(
-                        () => toast.show("문서 경로를 복사했습니다.", { variant: "success" }),
-                        () => toast.error("복사하지 못했습니다."),
-                      )
-                    }
-                  >
-                    <Text style={styles.secondary}>문서 경로 복사</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-            </View>
+            );
+          }
+          return (
+            <OtherDocumentBookmark
+              key={key}
+              documentPath={documentPath}
+              label={item.label}
+              title={title}
+              style={styles.row}
+              onFollow={onClose}
+            >
+              {memo}
+            </OtherDocumentBookmark>
           );
         })}
       </View>
