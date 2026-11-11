@@ -5,6 +5,7 @@ import {
   buildFootnote,
   findBlockEnd,
   fromSuperscript,
+  highlightRange,
   keptLength,
   locateRendered,
   locateSelection,
@@ -66,8 +67,26 @@ test("addFootnote references the selection and appends the definition", () => {
   const from = text.indexOf("beta");
   assert.equal(
     addFootnote(text, { from, to: from + 4 }, "질문", "왜?", "답"),
-    "# T\n\nAlpha **beta**[^1] gamma.\n\nNext.\n\n[^1]: **질문: 왜?**\n\n    답\n",
+    "# T\n\nAlpha **==beta==**[^1] gamma.\n\nNext.\n\n[^1]: **질문: 왜?**\n\n    답\n",
   );
+});
+
+test("addFootnote skips the highlight when the selection spans lines", () => {
+  const text = "one\ntwo";
+  assert.equal(
+    addFootnote(text, { from: 0, to: 7 }, "설명", "x", "A"),
+    "one\ntwo[^1]\n\n[^1]: **설명: x**\n\n    A\n",
+  );
+});
+
+test("highlightRange widens over markup to keep delimiters balanced", () => {
+  const text = "이것은 **멱등성**(idempotency)과 [재시도 큐](https://x.y/z)다.";
+  const slice = (range) => (range ? text.slice(range.from, range.to) : null);
+  const at = (s) => ({ from: text.indexOf(s), to: text.indexOf(s) + s.length });
+  assert.equal(slice(highlightRange(text, at("멱등성"))), "멱등성");
+  assert.equal(slice(highlightRange(text, at("멱등성**(idempotency)"))), "**멱등성**(idempotency)");
+  assert.equal(slice(highlightRange(text, at("과 [재시도 큐"))), "과 [재시도 큐](https://x.y/z)");
+  assert.equal(highlightRange("```\ncode\n```", { from: 4, to: 8 }), null);
 });
 
 test("addFootnote gives a reference inside fenced code its own paragraph", () => {
@@ -97,4 +116,14 @@ test("prepareFootnotes renders references as superscripts and collects notes", (
   ]);
   assert.equal(fromSuperscript("¹²"), 12);
   assert.ok(Number.isNaN(fromSuperscript("1")));
+});
+
+test("prepareFootnotes unwraps highlights and links them to their footnotes", () => {
+  const text = "A ==멱등성==[^1] and ==plain== but `==code==`.\n\n[^1]: note";
+  const { body, marks } = prepareFootnotes(text);
+  assert.equal(body, "A 멱등성¹ and plain but `==code==`.");
+  assert.deepEqual(marks, [
+    { text: "멱등성", number: 1 },
+    { text: "plain", number: null },
+  ]);
 });

@@ -3,7 +3,7 @@ import type { EditorState, Transaction } from "@codemirror/state";
 import type { EditorView, EditorViewConfig, Tooltip } from "@codemirror/view";
 import { Platform } from "react-native";
 import type { AskMode } from "../shared/explain";
-import type { TextRange } from "../shared/markdown";
+import { fromSuperscript, isKept, type Mark, type TextRange } from "../shared/markdown";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 interface DomEvent {
@@ -62,38 +62,132 @@ declare const document: DomEvents & {
   createRange(): DomRange;
   getSelection(): DomSelection | null;
   caretRangeFromPoint?(x: number, y: number): DomRange | null;
+  createElement(tag: "style"): DomStyle;
+  createTreeWalker(root: unknown, whatToShow: number): { nextNode(): DomText | null };
+  head: { appendChild(child: unknown): void };
 };
-
-const TEXT_NODE = 3;
-const SUPERSCRIPT_DIGIT = /[⁰¹²³⁴⁵⁶⁷⁸⁹]/;
-
-/** A hovered footnote reference: the superscript run and where to float its tooltip. */
-export interface FootnoteHover {
-  text: string;
-  /** Tooltip position relative to the container's top-left corner. */
-  top: number;
-  left: number;
+interface DomStyle {
+  textContent: string | null;
+  remove(): void;
+}
+declare function requestAnimationFrame(callback: () => void): number;
+declare function cancelAnimationFrame(handle: number): void;
+declare class MutationObserver {
+  constructor(callback: () => void);
+  observe(target: unknown, options: { childList?: boolean; subtree?: boolean; characterData?: boolean }): void;
+  disconnect(): void;
 }
 
+const TEXT_NODE = 3;
+const SHOW_TEXT = 4;
+const SUPERSCRIPT_DIGIT = /[⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+const MARK_COLOR = "rgba(255, 212, 0, 0.38)";
+const HOVER_SLACK = 3;
+
+interface HighlightRegistry {
+  set(name: string, highlight: unknown): void;
+  delete(name: string): void;
+}
+interface HighlightGlobals {
+  CSS?: { highlights?: HighlightRegistry };
+  Highlight?: new (...ranges: DomRange[]) => unknown;
+}
+
+/** A hovered footnote: its number and where to float its tooltip. */
+export interface FootnoteHover {
+  number: number;
+  /** Position relative to the overlay's top-left corner: the left edge and just below the text. */
+  left: number;
+  top: number;
+  /** Distance from the overlay's bottom edge to just above the text, for placing it above. */
+  bottom: number;
+  /** Overlay size, so the tooltip can stay inside it. */
+  width: number;
+  height: number;
+}
+
+export interface PreviewDecorations {
+  /** Paints `marks` (in document order) as highlights; linked marks show their note on hover. */
+  setMarks(marks: readonly Mark[]): void;
+  dispose(): void;
+}
+
+let decorationCount = 0;
+
 /**
- * Reports the superscript footnote reference under the pointer inside `container`, and null
- * when the pointer leaves it. Reports only changes. Returns the unsubscribe function.
+ * Decorates rendered Markdown inside `container` without touching its DOM: paints highlights
+ * through the CSS Custom Highlight API, and reports the footnote under the pointer, whether the
+ * pointer is on a superscript reference or on a highlight linked to a footnote. Hover positions
+ * are relative to `overlay`, the element the tooltip is drawn in.
  */
-export function watchFootnoteHover(
+export function decoratePreview(
   container: unknown,
-  onChange: (hover: FootnoteHover | null) => void,
-): () => void {
-  if (Platform.OS !== "web" || !container || !document.caretRangeFromPoint) return () => {};
+  overlay: unknown,
+  onHover: (hover: FootnoteHover | null) => void,
+): PreviewDecorations {
+  const none: PreviewDecorations = { setMarks() {}, dispose() {} };
+  if (Platform.OS !== "web" || !container || !overlay) return none;
   const root = container as DomElement;
+  const overlayElement = overlay as DomElement;
+  const globals = globalThis as HighlightGlobals;
+  const registry = globals.CSS?.highlights;
+  const name = `doc-ask-mark-${++decorationCount}`;
+  const style = document.createElement("style");
+  style.textContent = `::highlight(${name}) { background-color: ${MARK_COLOR}; }`;
+  document.head.appendChild(style);
+
+  let marks: readonly Mark[] = [];
+  let painted: { range: DomRange; number: number | null }[] = [];
+  let frame = 0;
+
+  const paint = () => {
+    frame = 0;
+    painted = locateMarks(root, marks);
+    if (!registry || !globals.Highlight) return;
+    if (painted.length === 0) registry.delete(name);
+    else registry.set(name, new globals.Highlight(...painted.map((mark) => mark.range)));
+  };
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(paint);
+  };
+  // The renderer may update the DOM after React commits; repaint whenever it changes.
+  const observer = new MutationObserver(schedule);
+  observer.observe(root, { childList: true, subtree: true, characterData: true });
+
   let last: string | null = null;
   const report = (hover: FootnoteHover | null) => {
-    const key = hover ? `${hover.text}@${hover.top},${hover.left}` : null;
+    const key = hover ? `${hover.number}@${hover.top},${hover.left}` : null;
     if (key === last) return;
     last = key;
-    onChange(hover);
+    onHover(hover);
   };
+  const within = (rect: DomRect, x: number, y: number) =>
+    x >= rect.left - HOVER_SLACK &&
+    x <= rect.right + HOVER_SLACK &&
+    y >= rect.top - HOVER_SLACK &&
+    y <= rect.bottom + HOVER_SLACK;
+  const hoverAt = (rect: DomRect, number: number): FootnoteHover => {
+    const box = overlayElement.getBoundingClientRect();
+    return {
+      number,
+      left: Math.max(0, rect.left - box.left - 12),
+      top: rect.bottom - box.top + 4,
+      bottom: box.bottom - rect.top + 4,
+      width: box.right - box.left,
+      height: box.bottom - box.top,
+    };
+  };
+
   const move: DomListener = (event) => {
-    const caret = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+    const { clientX: x, clientY: y } = event;
+    for (const mark of painted) {
+      if (mark.number === null) continue;
+      const rects = mark.range.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        if (within(rects[i], x, y)) return report(hoverAt(rects[i], mark.number));
+      }
+    }
+    const caret = document.caretRangeFromPoint?.(x, y);
     const node = caret?.startContainer as DomText | undefined;
     if (!caret || !node || node.nodeType !== TEXT_NODE || !root.contains(node)) return report(null);
     const text = node.textContent ?? "";
@@ -107,23 +201,62 @@ export function watchFootnoteHover(
     run.setStart(node, start);
     run.setEnd(node, end);
     const rect = run.getBoundingClientRect();
-    const slack = 3;
-    const inside =
-      event.clientX >= rect.left - slack &&
-      event.clientX <= rect.right + slack &&
-      event.clientY >= rect.top - slack &&
-      event.clientY <= rect.bottom + slack;
-    if (!inside) return report(null);
-    const box = root.getBoundingClientRect();
-    report({ text: text.slice(start, end), top: rect.bottom - box.top + 4, left: Math.max(0, rect.left - box.left - 12) });
+    if (!within(rect, x, y)) return report(null);
+    report(hoverAt(rect, fromSuperscript(text.slice(start, end))));
   };
   const leave: DomListener = () => report(null);
   root.addEventListener("mousemove", move);
   root.addEventListener("mouseleave", leave);
-  return () => {
-    root.removeEventListener("mousemove", move);
-    root.removeEventListener("mouseleave", leave);
+
+  return {
+    setMarks(next) {
+      marks = next;
+      schedule();
+    },
+    dispose() {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+      root.removeEventListener("mousemove", move);
+      root.removeEventListener("mouseleave", leave);
+      registry?.delete(name);
+      style.remove();
+    },
   };
+}
+
+/**
+ * Finds each mark's text in the rendered DOM, in document order, comparing only characters the
+ * markup filter keeps. A mark that is not found is skipped.
+ */
+function locateMarks(root: DomElement, marks: readonly Mark[]): { range: DomRange; number: number | null }[] {
+  if (marks.length === 0) return [];
+  let plain = "";
+  const at: { node: DomText; offset: number }[] = [];
+  const walker = document.createTreeWalker(root, SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.textContent ?? "";
+    for (let i = 0; i < text.length; i++) {
+      if (!isKept(text[i])) continue;
+      plain += text[i];
+      at.push({ node, offset: i });
+    }
+  }
+  const found: { range: DomRange; number: number | null }[] = [];
+  let cursor = 0;
+  for (const mark of marks) {
+    const needle = [...mark.text].filter(isKept).join("");
+    if (needle === "") continue;
+    const index = plain.indexOf(needle, cursor);
+    if (index === -1) continue;
+    const first = at[index];
+    const last = at[index + needle.length - 1];
+    const range = document.createRange();
+    range.setStart(first.node, first.offset);
+    range.setEnd(last.node, last.offset + 1);
+    found.push({ range, number: mark.number });
+    cursor = index + needle.length;
+  }
+  return found;
 }
 
 /** Text selected in rendered Markdown, with where to float the ask button. */
@@ -349,5 +482,41 @@ export function mountViewer(
     destroy() {
       view.destroy();
     },
+  };
+}
+
+/** Reports vertical mouse drags that start on `handle`. Returns the cleanup. */
+export function watchVerticalDrag(
+  handle: unknown,
+  on: { start(): void; move(dy: number): void; end(): void },
+): () => void {
+  if (Platform.OS !== "web" || !handle) return () => {};
+  const element = handle as DomElement;
+  let startY: number | null = null;
+  const move: DomListener = (event) => {
+    if (startY !== null) on.move(event.clientY - startY);
+  };
+  const stop = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  const up: DomListener = () => {
+    if (startY === null) return;
+    startY = null;
+    stop();
+    on.end();
+  };
+  const down: DomListener = (event) => {
+    // Keep the drag from selecting text.
+    event.preventDefault();
+    startY = event.clientY;
+    on.start();
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+  element.addEventListener("mousedown", down);
+  return () => {
+    element.removeEventListener("mousedown", down);
+    stop();
   };
 }

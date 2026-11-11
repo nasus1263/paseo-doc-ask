@@ -34,3 +34,11 @@ export const promptSettings = defineSettings({
   version: 1,
   schema: z.object({ extraPrompt: z.string().default("") }),
 });
+
+/** Panel layout preferences. The installed SDK supports only host-scoped settings. */
+export const layoutSettings = defineSettings({
+  id: "layout",
+  scope: "host",
+  version: 1,
+  schema: z.object({ messageHeight: z.number().int().min(60).max(4000).default(220) }),
+});

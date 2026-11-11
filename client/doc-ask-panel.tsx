@@ -9,28 +9,29 @@ import {
   useTabState,
 } from "@getpaseo/plugin/client";
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
-import { type AskMode, explainRpc, promptSettings, resetRpc } from "../shared/explain";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
+import { type AskMode, explainRpc, layoutSettings, promptSettings, resetRpc } from "../shared/explain";
 import {
   addFootnote,
   type Footnote,
-  fromSuperscript,
   keptLength,
   locateRendered,
   locateSelection,
+  type Mark,
   prepareFootnotes,
   type TextRange,
 } from "../shared/markdown";
 import {
   ASK_ACTIONS,
+  decoratePreview,
   type DocViewerHandle,
   type FootnoteHover,
   keepSelectionOnPress,
   mountViewer,
   type RenderedSelection,
-  watchFootnoteHover,
   watchSelection,
+  watchVerticalDrag,
 } from "./web";
 
 type Theme = PluginFilePanelProps["theme"];
@@ -52,6 +53,9 @@ type Message =
   | { kind: "failed"; title: string; reason: string; answer: string | null };
 
 const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문" };
+const TOOLTIP_WIDTH = 380;
+const TOOLTIP_MAX_HEIGHT = 300;
+const MESSAGE_MIN_HEIGHT = 80;
 
 const viewSchema = z.object({ view: z.enum(["preview", "source"]) });
 const defaultView = { view: "preview" } as const;
@@ -63,12 +67,15 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const [text, setText] = useState<string | null>(null);
   const latestText = useRef("");
   const busy = useRef(false);
+  const root = useRef<View>(null);
+  const [rootHeight, setRootHeight] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const [questionAnchor, setQuestionAnchor] = useState<Anchor | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const explain = useRpc(explainRpc);
   const toast = useToast();
+  const prepared = useMemo(() => (text === null ? null : prepareFootnotes(text)), [text]);
 
   const show = useCallback((next: string) => {
     latestText.current = next;
@@ -165,6 +172,28 @@ function DocAskViewer(props: PluginFilePanelProps) {
     [ask],
   );
 
+  // Footnote tooltip. It lives at the panel root so it draws above the message panel; it stays
+  // open briefly after the pointer leaves the reference so the pointer can move onto it.
+  const [hover, setHover] = useState<FootnoteHover | null>(null);
+  const overTip = useRef(false);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onHover = useCallback((next: FootnoteHover | null) => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (next) setHover(next);
+    else {
+      hideTimer.current = setTimeout(() => {
+        if (!overTip.current) setHover(null);
+      }, 200);
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    },
+    [],
+  );
+  const hoveredNote = hover ? prepared?.notes.find((note) => note.number === hover.number) : undefined;
+
   const reset = useRpc(resetRpc);
   const [resetting, setResetting] = useState(false);
   const resetContext = useCallback(async () => {
@@ -196,7 +225,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
   );
 
   return (
-    <View style={styles.panel}>
+    <View ref={root} style={styles.panel} onLayout={(event) => setRootHeight(event.nativeEvent.layout.height)}>
       <View style={styles.toolbar}>
         {(["preview", "source"] as const).map((id) => (
           <Pressable
@@ -228,14 +257,41 @@ function DocAskViewer(props: PluginFilePanelProps) {
         </Pressable>
       </View>
       {loadError ? <Text style={styles.error}>{loadError}</Text> : null}
-      {text === null ? (
+      {text === null || prepared === null ? (
         loadError ? null : <Loading />
       ) : view.view === "preview" ? (
-        <PreviewView text={text} theme={theme} compact={layout.compact} onAction={onAction} />
+        <PreviewView
+          body={prepared.body}
+          notes={prepared.notes}
+          marks={prepared.marks}
+          theme={theme}
+          compact={layout.compact}
+          overlay={root}
+          onHover={onHover}
+          onAction={onAction}
+        />
       ) : (
         <SourceView text={text} theme={theme} onAction={onAction} />
       )}
-      {message ? <MessageBox message={message} theme={theme} onClose={() => setMessage(null)} /> : null}
+      {message ? (
+        <MessageBox
+          message={message}
+          theme={theme}
+          maxHeight={Math.max(MESSAGE_MIN_HEIGHT, rootHeight * 0.85)}
+          onClose={() => setMessage(null)}
+        />
+      ) : null}
+      {hover && hoveredNote ? (
+        <FootnoteTooltip
+          hover={hover}
+          note={hoveredNote}
+          theme={theme}
+          onHoverChange={(over) => {
+            overTip.current = over;
+            if (!over) setHover(null);
+          }}
+        />
+      ) : null}
       <QuestionModal
         anchor={questionAnchor}
         theme={theme}
@@ -248,12 +304,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
       <PromptModal open={promptOpen} theme={theme} onClose={() => setPromptOpen(false)} />
     </View>
   );
-}
-
-interface ViewProps {
-  text: string;
-  theme: Theme;
-  onAction: (anchor: Anchor, mode: AskMode) => void;
 }
 
 /** Paseo's built-in Markdown preview layout: a gutter around a centered reading column. */
@@ -271,38 +321,42 @@ function readingLayout(compact: boolean) {
   };
 }
 
+interface PreviewProps {
+  body: string;
+  notes: Footnote[];
+  marks: Mark[];
+  theme: Theme;
+  compact: boolean;
+  overlay: RefObject<View | null>;
+  onHover: (hover: FootnoteHover | null) => void;
+  onAction: (anchor: Anchor, mode: AskMode) => void;
+}
+
 /**
- * Paseo's own Markdown rendering. Footnote references show as superscript numbers with a hover
- * tooltip, the notes are listed at the end, and selections get floating ask buttons.
+ * Paseo's own Markdown rendering. Highlights and superscript references show their footnote on
+ * hover, the notes are listed at the end, and selections get floating ask buttons.
  */
-function PreviewView({ text, theme, compact, onAction }: ViewProps & { compact: boolean }) {
+function PreviewView({ body, notes, marks, theme, compact, overlay, onHover, onAction }: PreviewProps) {
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
-  const [hover, setHover] = useState<FootnoteHover | null>(null);
-  const overTip = useRef(false);
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const { body, notes } = useMemo(() => prepareFootnotes(text), [text]);
+  const decorations = useRef<ReturnType<typeof decoratePreview> | null>(null);
+  const onHoverRef = useRef(onHover);
+  onHoverRef.current = onHover;
 
   useEffect(() => watchSelection(content.current, setSelection), []);
   useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
   useEffect(() => {
-    const stop = watchFootnoteHover(content.current, (next) => {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-      if (next) setHover(next);
-      else {
-        hideTimer.current = setTimeout(() => {
-          if (!overTip.current) setHover(null);
-        }, 200);
-      }
-    });
+    decorations.current = decoratePreview(content.current, overlay.current, (hover) => onHoverRef.current(hover));
     return () => {
-      stop();
-      if (hideTimer.current) clearTimeout(hideTimer.current);
+      decorations.current?.dispose();
+      decorations.current = null;
+      onHoverRef.current(null);
     };
-  }, []);
-
-  const hovered = hover ? notes.find((note) => note.number === fromSuperscript(hover.text)) : undefined;
+  }, [overlay]);
+  useEffect(() => {
+    decorations.current?.setMarks(marks);
+  }, [marks]);
 
   const styles = useMemo(
     () => ({
@@ -316,27 +370,13 @@ function PreviewView({ text, theme, compact, onAction }: ViewProps & { compact: 
         backgroundColor: theme.colors.accent,
       },
       label: { color: theme.colors.accentForeground },
-      tooltip: {
-        position: "absolute" as const,
-        width: 380,
-        maxWidth: "90%" as const,
-        maxHeight: 300,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface2,
-        shadowColor: "#000",
-        shadowOpacity: 0.2,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 4 },
-      },
-      tooltipContent: { padding: 12 },
     }),
     [theme, compact],
   );
 
   return (
-    <ScrollView style={styles.scroll}>
+    // Scrolling moves the text away from a tooltip anchored to it.
+    <ScrollView style={styles.scroll} onScroll={() => onHover(null)} scrollEventThrottle={100}>
       <View style={styles.gutter}>
         <View ref={content} style={styles.frame}>
           <Markdown>{body}</Markdown>
@@ -362,26 +402,58 @@ function PreviewView({ text, theme, compact, onAction }: ViewProps & { compact: 
               ))}
             </View>
           ) : null}
-          {hover && hovered ? (
-            <Pressable
-              accessibilityRole="none"
-              style={[styles.tooltip, { top: hover.top, left: hover.left }]}
-              onHoverIn={() => {
-                overTip.current = true;
-              }}
-              onHoverOut={() => {
-                overTip.current = false;
-                setHover(null);
-              }}
-            >
-              <ScrollView contentContainerStyle={styles.tooltipContent}>
-                <Markdown>{hovered.content}</Markdown>
-              </ScrollView>
-            </Pressable>
-          ) : null}
         </View>
       </View>
     </ScrollView>
+  );
+}
+
+/** A footnote's content floating by its reference, kept inside the panel. */
+function FootnoteTooltip({
+  hover,
+  note,
+  theme,
+  onHoverChange,
+}: {
+  hover: FootnoteHover;
+  note: Footnote;
+  theme: Theme;
+  onHoverChange: (over: boolean) => void;
+}) {
+  const width = Math.min(TOOLTIP_WIDTH, hover.width - 16);
+  const left = Math.max(8, Math.min(hover.left, hover.width - width - 8));
+  const spaceBelow = hover.height - hover.top - 8;
+  const spaceAbove = hover.height - hover.bottom - 8;
+  const below = spaceBelow >= 160 || spaceBelow >= spaceAbove;
+  const place: ViewStyle = below
+    ? { top: hover.top, maxHeight: Math.min(TOOLTIP_MAX_HEIGHT, spaceBelow) }
+    : { bottom: hover.bottom, maxHeight: Math.min(TOOLTIP_MAX_HEIGHT, spaceAbove) };
+  const style = useMemo(
+    () => ({
+      position: "absolute" as const,
+      zIndex: 10,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface2,
+      shadowColor: "#000",
+      shadowOpacity: 0.2,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 4 },
+    }),
+    [theme],
+  );
+  return (
+    <Pressable
+      accessibilityRole="none"
+      style={[style, place, { left, width }]}
+      onHoverIn={() => onHoverChange(true)}
+      onHoverOut={() => onHoverChange(false)}
+    >
+      <ScrollView contentContainerStyle={{ padding: 12 }}>
+        <Markdown>{note.content}</Markdown>
+      </ScrollView>
+    </Pressable>
   );
 }
 
@@ -419,8 +491,14 @@ function FootnoteList({ notes, theme }: { notes: Footnote[]; theme: Theme }) {
   );
 }
 
+interface SourceProps {
+  text: string;
+  theme: Theme;
+  onAction: (anchor: Anchor, mode: AskMode) => void;
+}
+
 /** Read-only CodeMirror source; selections show the ask buttons as an editor tooltip. */
-function SourceView({ text, theme, onAction }: ViewProps) {
+function SourceView({ text, theme, onAction }: SourceProps) {
   const parent = useRef<View>(null);
   const viewer = useRef<DocViewerHandle | null>(null);
   const onActionRef = useRef(onAction);
@@ -573,18 +651,65 @@ function modalStyles(theme: Theme) {
   };
 }
 
-function MessageBox({ message, theme, onClose }: { message: Message; theme: Theme; onClose: () => void }) {
+/** The request status and answer, resizable from its top edge; the height is saved. */
+function MessageBox({
+  message,
+  theme,
+  maxHeight,
+  onClose,
+}: {
+  message: Message;
+  theme: Theme;
+  maxHeight: number;
+  onClose: () => void;
+}) {
   const toast = useToast();
+  const layout = useSettings(layoutSettings);
+  const saved = layout.status === "ready" ? layout.values.messageHeight : 220;
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const height = Math.min(maxHeight, Math.max(MESSAGE_MIN_HEIGHT, dragHeight ?? saved));
+  const handle = useRef<View>(null);
+  const live = useRef({ height, start: height, maxHeight, layout });
+  live.current = { ...live.current, height, maxHeight, layout };
+
+  useEffect(
+    () =>
+      watchVerticalDrag(handle.current, {
+        start() {
+          live.current.start = live.current.height;
+        },
+        move(dy) {
+          const next = live.current.start - dy;
+          setDragHeight(Math.round(Math.min(live.current.maxHeight, Math.max(MESSAGE_MIN_HEIGHT, next))));
+        },
+        end() {
+          const current = live.current.layout;
+          const value = Math.round(live.current.height);
+          if (current.status !== "ready") return;
+          void current.save({ messageHeight: value }, current.revision).then(() => setDragHeight(null));
+        },
+      }),
+    [],
+  );
+
   const answer = message.kind === "pending" ? null : message.answer;
   const styles = useMemo(
     () => ({
       box: {
-        maxHeight: "45%" as const,
         borderTopWidth: 1,
         borderTopColor: theme.colors.border,
         backgroundColor: theme.colors.surface1,
       },
-      content: { padding: 16, gap: 8 },
+      handle: {
+        height: 8,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+        // react-native-web passes the CSS cursor through; the RN type lists fewer values.
+        cursor: "row-resize",
+      } as unknown as ViewStyle,
+      grip: { width: 36, height: 3, borderRadius: 2, backgroundColor: theme.colors.border },
+      scroll: { flex: 1, minHeight: 0 },
+      content: { paddingHorizontal: 16, paddingBottom: 16, gap: 8 },
       header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12 },
       status: {
         flex: 1,
@@ -605,7 +730,7 @@ function MessageBox({ message, theme, onClose }: { message: Message; theme: Them
     message.kind === "pending"
       ? "AI에게 묻는 중…"
       : message.kind === "saved"
-        ? "문서에 각주로 반영했습니다."
+        ? "문서에 반영했습니다."
         : message.reason;
 
   async function copyAnswer() {
@@ -619,25 +744,30 @@ function MessageBox({ message, theme, onClose }: { message: Message; theme: Them
   }
 
   return (
-    <ScrollView style={styles.box} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Text style={styles.status}>{status}</Text>
-        {answer ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="답 복사" onPress={copyAnswer}>
-            <Text style={styles.action}>복사</Text>
-          </Pressable>
-        ) : null}
-        {message.kind !== "pending" ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="메시지 닫기" onPress={onClose}>
-            <Text style={styles.action}>닫기</Text>
-          </Pressable>
-        ) : null}
+    <View style={[styles.box, { height }]}>
+      <View ref={handle} style={styles.handle} accessibilityLabel="메시지 창 높이 조절">
+        <View style={styles.grip} />
       </View>
-      <Text style={styles.quote} numberOfLines={2}>
-        {message.title}
-      </Text>
-      {answer ? <Markdown>{answer}</Markdown> : null}
-    </ScrollView>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <Text style={styles.status}>{status}</Text>
+          {answer ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="답 복사" onPress={copyAnswer}>
+              <Text style={styles.action}>복사</Text>
+            </Pressable>
+          ) : null}
+          {message.kind !== "pending" ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="메시지 닫기" onPress={onClose}>
+              <Text style={styles.action}>닫기</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        <Text style={styles.quote} numberOfLines={2}>
+          {message.title}
+        </Text>
+        {answer ? <Markdown>{answer}</Markdown> : null}
+      </ScrollView>
+    </View>
   );
 }
 

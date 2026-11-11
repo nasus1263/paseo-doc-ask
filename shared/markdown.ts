@@ -29,7 +29,12 @@ export function locateSelection(text: string, range: TextRange, selected: string
  * Characters that rendered Markdown drops or adds: whitespace, markup, bullets, escapes, and
  * the superscript numbers the preview draws for footnote references.
  */
-const MARKUP = /[\s*_`~#>[\]|\-+•\\⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+const MARKUP = /[\s*_`~#>[\]|\-+=•\\⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+
+/** Whether `ch` survives the markup filter used to match rendered text against source. */
+export function isKept(ch: string): boolean {
+  return !MARKUP.test(ch);
+}
 
 /**
  * Maps text selected in rendered Markdown back to a source range. Both sides drop markup
@@ -158,13 +163,54 @@ export function buildFootnote(id: string, label: string, subject: string, answer
   return [`[^${id}]: **${label}: ${title}**`, "", ...body].join("\n");
 }
 
+/** Whether wrapping `slice` in `==` keeps its emphasis, code and links intact. */
+function wrappable(slice: string): boolean {
+  const count = (re: RegExp) => slice.match(re)?.length ?? 0;
+  return (
+    slice.trim() !== "" &&
+    !slice.includes("\n") &&
+    !slice.includes("==") &&
+    !slice.includes("[^") &&
+    count(/\*\*/g) % 2 === 0 &&
+    count(/(?<!\*)\*(?!\*)/g) % 2 === 0 &&
+    count(/~~/g) % 2 === 0 &&
+    count(/`/g) % 2 === 0 &&
+    count(/\[/g) === count(/\]/g) &&
+    !/\]\([^)]*$/.test(slice)
+  );
+}
+
 /**
- * Adds a footnote reference after the selection ending at `at.to` and appends its definition at
- * the end of the document.
+ * The range to wrap in `==` for a selection: the selection itself, or widened over adjacent
+ * markup so delimiters stay balanced. Null when no such range exists, such as across lines or
+ * inside fenced code.
+ */
+export function highlightRange(text: string, at: TextRange): TextRange | null {
+  if (inFenceAt(text, at.from)) return null;
+  let left = at.from;
+  while (left > 0 && "*_~`[".includes(text[left - 1])) left--;
+  let right = at.to;
+  for (;;) {
+    if ("*_~`".includes(text[right] ?? "\n")) right++;
+    else if (text.startsWith("](", right) && text.indexOf(")", right) !== -1) right = text.indexOf(")", right) + 1;
+    else break;
+  }
+  const candidates = [at, { from: left, to: at.to }, { from: at.from, to: right }, { from: left, to: right }];
+  return candidates.find((range) => wrappable(text.slice(range.from, range.to))) ?? null;
+}
+
+/**
+ * Adds a footnote for the selection `at`: highlights it with `==` when that keeps the markup
+ * intact, references the footnote right after it, and appends the definition at the end.
  */
 export function addFootnote(text: string, at: TextRange, label: string, subject: string, answer: string): string {
   const id = nextFootnoteLabel(text);
   const ref = `[^${id}]`;
+  const mark = highlightRange(text, at);
+  if (mark) {
+    text = `${text.slice(0, mark.from)}==${text.slice(mark.from, mark.to)}==${text.slice(mark.to)}`;
+    at = { from: mark.from, to: mark.to + 4 };
+  }
   const offset = referenceOffset(text, at.to);
   const withRef =
     offset === null
@@ -189,12 +235,21 @@ export function fromSuperscript(text: string): number {
   return digits.length > 0 && digits.every((d) => d >= 0) ? Number(digits.join("")) : NaN;
 }
 
+/** A `==highlight==` removed for display; `number` is its footnote when one follows it. */
+export interface Mark {
+  text: string;
+  number: number | null;
+}
+
+const INLINE_TOKEN = /==(?=\S)([^=\n]*?\S)==(\[\^([^\]\s]+)\])?|\[\^([^\]\s]+)\]/g;
+
 /**
- * Prepares Markdown for display: removes footnote definitions and replaces references with
- * superscript numbers, numbered by first reference. Returns the body and the notes in number
- * order; definitions nobody references come last. Fenced and inline code are left alone.
+ * Prepares Markdown for display: removes footnote definitions, replaces references with
+ * superscript numbers (numbered by first reference), and unwraps `==highlights==`. Returns the
+ * body, the notes in number order (unreferenced definitions last), and the highlights in
+ * document order. Fenced and inline code are left alone.
  */
-export function prepareFootnotes(text: string): { body: string; notes: Footnote[] } {
+export function prepareFootnotes(text: string): { body: string; notes: Footnote[]; marks: Mark[] } {
   const lines = text.split("\n");
   const bodyLines: string[] = [];
   const definitions = new Map<string, string>();
@@ -219,24 +274,38 @@ export function prepareFootnotes(text: string): { body: string; notes: Footnote[
   }
 
   const numbers = new Map<string, number>();
+  const marks: Mark[] = [];
+  const numberOf = (label: string) => {
+    let n = numbers.get(label);
+    if (n === undefined) numbers.set(label, (n = numbers.size + 1));
+    return n;
+  };
   inFence = false;
   const body = bodyLines
     .map((line) => {
       if (FENCE.test(line)) inFence = !inFence;
-      if (inFence || !line.includes("[^")) return line;
+      if (inFence || (!line.includes("[^") && !line.includes("=="))) return line;
       // Odd parts are inline code spans.
       return line
         .split(/(`+[^`]*`+)/)
         .map((part, index) =>
           index % 2 === 1
             ? part
-            : part.replace(/\[\^([^\]\s]+)\]/g, (match, label: string, offset: number) => {
-                if (!definitions.has(label)) return match;
-                let n = numbers.get(label);
-                if (n === undefined) numbers.set(label, (n = numbers.size + 1));
-                const adjacent = offset > 0 && part.slice(0, offset).endsWith("]");
-                return `${adjacent ? "," : ""}${superscript(n)}`;
-              }),
+            : part.replace(
+                INLINE_TOKEN,
+                (match, marked: string | undefined, markRef: string | undefined, markLabel: string | undefined, label: string | undefined, offset: number) => {
+                  if (marked !== undefined) {
+                    const linked = markLabel !== undefined && definitions.has(markLabel);
+                    const n = linked ? numberOf(markLabel) : null;
+                    marks.push({ text: marked, number: n });
+                    if (markRef === undefined) return marked;
+                    return n === null ? marked + markRef : marked + superscript(n);
+                  }
+                  if (label === undefined || !definitions.has(label)) return match;
+                  const adjacent = offset > 0 && part.slice(0, offset).endsWith("]");
+                  return `${adjacent ? "," : ""}${superscript(numberOf(label))}`;
+                },
+              ),
         )
         .join("");
     })
@@ -250,5 +319,5 @@ export function prepareFootnotes(text: string): { body: string; notes: Footnote[
     number,
     content: definitions.get(label) ?? "",
   }));
-  return { body, notes };
+  return { body, notes, marks };
 }
