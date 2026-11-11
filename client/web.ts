@@ -137,7 +137,7 @@ export function decoratePreview(
   document.head.appendChild(style);
 
   let marks: readonly Mark[] = [];
-  let painted: { range: DomRange; number: number | null }[] = [];
+  let painted: LocatedMark[] = [];
   let frame = 0;
 
   const paint = () => {
@@ -154,9 +154,11 @@ export function decoratePreview(
   const observer = new MutationObserver(schedule);
   observer.observe(root, { childList: true, subtree: true, characterData: true });
 
-  let last: string | null = null;
+  // Keyed by footnote only: moving between a highlight, its other lines and its superscript keeps
+  // the tooltip where it first opened.
+  let last: number | null = null;
   const report = (hover: FootnoteHover | null) => {
-    const key = hover ? `${hover.number}@${hover.top},${hover.left}` : null;
+    const key = hover ? hover.number : null;
     if (key === last) return;
     last = key;
     onHover(hover);
@@ -182,7 +184,7 @@ export function decoratePreview(
     const { clientX: x, clientY: y } = event;
     for (const mark of painted) {
       if (mark.number === null) continue;
-      const rects = mark.range.getClientRects();
+      const rects = mark.hoverRange.getClientRects();
       for (let i = 0; i < rects.length; i++) {
         if (within(rects[i], x, y)) return report(hoverAt(rects[i], mark.number));
       }
@@ -224,24 +226,48 @@ export function decoratePreview(
   };
 }
 
+interface LocatedMark {
+  /** The highlighted text, which is painted. */
+  range: DomRange;
+  /** The text plus its superscript reference: one hover target for the footnote. */
+  hoverRange: DomRange;
+  number: number | null;
+}
+
+/** The node and offset just past the superscript reference that follows `offset` in `nodes[index]`. */
+function pastReference(nodes: DomText[], index: number, offset: number): { node: DomText; offset: number } {
+  let end = { node: nodes[index], offset };
+  for (let i = index; i < nodes.length; i++) {
+    const text = nodes[i].textContent ?? "";
+    let pos = i === index ? offset : 0;
+    while (pos < text.length && (SUPERSCRIPT_DIGIT.test(text[pos]) || text[pos] === ",")) pos++;
+    if (pos > (i === index ? offset : 0)) end = { node: nodes[i], offset: pos };
+    // Stop at the first character that is not part of the reference.
+    if (pos < text.length) break;
+  }
+  return end;
+}
+
 /**
  * Finds each mark's text in the rendered DOM, in document order, comparing only characters the
  * markup filter keeps. A mark that is not found is skipped.
  */
-function locateMarks(root: DomElement, marks: readonly Mark[]): { range: DomRange; number: number | null }[] {
+function locateMarks(root: DomElement, marks: readonly Mark[]): LocatedMark[] {
   if (marks.length === 0) return [];
   let plain = "";
-  const at: { node: DomText; offset: number }[] = [];
+  const at: { node: DomText; offset: number; index: number }[] = [];
+  const nodes: DomText[] = [];
   const walker = document.createTreeWalker(root, SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    nodes.push(node);
     const text = node.textContent ?? "";
     for (let i = 0; i < text.length; i++) {
       if (!isKept(text[i])) continue;
       plain += text[i];
-      at.push({ node, offset: i });
+      at.push({ node, offset: i, index: nodes.length - 1 });
     }
   }
-  const found: { range: DomRange; number: number | null }[] = [];
+  const found: LocatedMark[] = [];
   let cursor = 0;
   for (const mark of marks) {
     const needle = [...mark.text].filter(isKept).join("");
@@ -253,7 +279,11 @@ function locateMarks(root: DomElement, marks: readonly Mark[]): { range: DomRang
     const range = document.createRange();
     range.setStart(first.node, first.offset);
     range.setEnd(last.node, last.offset + 1);
-    found.push({ range, number: mark.number });
+    const hoverRange = document.createRange();
+    hoverRange.setStart(first.node, first.offset);
+    const end = mark.number === null ? { node: last.node, offset: last.offset + 1 } : pastReference(nodes, last.index, last.offset + 1);
+    hoverRange.setEnd(end.node, end.offset);
+    found.push({ range, hoverRange, number: mark.number });
     cursor = index + needle.length;
   }
   return found;
