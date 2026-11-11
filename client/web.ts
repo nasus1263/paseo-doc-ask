@@ -132,6 +132,7 @@ export function decoratePreview(
   container: unknown,
   overlay: unknown,
   onHover: (hover: FootnoteHover | null) => void,
+  onOpen: (number: number) => void,
 ): PreviewDecorations {
   const none: PreviewDecorations = { setMarks() {}, dispose() {} };
   if (Platform.OS !== "web" || !container || !overlay) return none;
@@ -188,22 +189,22 @@ export function decoratePreview(
     };
   };
 
-  const move: DomListener = (event) => {
-    const { clientX: x, clientY: y } = event;
+  /** The footnote under the point: a linked highlight with its reference, or a superscript. */
+  const footnoteAt = (x: number, y: number): { number: number; rect: DomRect } | null => {
     for (const mark of painted) {
       if (mark.number === null) continue;
       const rects = mark.hoverRange.getClientRects();
       for (let i = 0; i < rects.length; i++) {
-        if (within(rects[i], x, y)) return report(hoverAt(rects[i], mark.number));
+        if (within(rects[i], x, y)) return { number: mark.number, rect: rects[i] };
       }
     }
     const caret = document.caretRangeFromPoint?.(x, y);
     const node = caret?.startContainer as DomText | undefined;
-    if (!caret || !node || node.nodeType !== TEXT_NODE || !root.contains(node)) return report(null);
+    if (!caret || !node || node.nodeType !== TEXT_NODE || !root.contains(node)) return null;
     const text = node.textContent ?? "";
     let start = caret.startOffset;
     if (!SUPERSCRIPT_DIGIT.test(text[start] ?? "")) start--;
-    if (!SUPERSCRIPT_DIGIT.test(text[start] ?? "")) return report(null);
+    if (!SUPERSCRIPT_DIGIT.test(text[start] ?? "")) return null;
     let end = start + 1;
     while (start > 0 && SUPERSCRIPT_DIGIT.test(text[start - 1])) start--;
     while (end < text.length && SUPERSCRIPT_DIGIT.test(text[end])) end++;
@@ -211,12 +212,23 @@ export function decoratePreview(
     run.setStart(node, start);
     run.setEnd(node, end);
     const rect = run.getBoundingClientRect();
-    if (!within(rect, x, y)) return report(null);
-    report(hoverAt(rect, fromSuperscript(text.slice(start, end))));
+    return within(rect, x, y) ? { number: fromSuperscript(text.slice(start, end)), rect } : null;
+  };
+
+  const move: DomListener = (event) => {
+    const hit = footnoteAt(event.clientX, event.clientY);
+    report(hit ? hoverAt(hit.rect, hit.number) : null);
   };
   const leave: DomListener = () => report(null);
+  // A plain click opens the footnote; a click that ends a drag selection does not.
+  const click: DomListener = (event) => {
+    if (document.getSelection()?.isCollapsed === false) return;
+    const hit = footnoteAt(event.clientX, event.clientY);
+    if (hit) onOpen(hit.number);
+  };
   root.addEventListener("mousemove", move);
   root.addEventListener("mouseleave", leave);
+  root.addEventListener("click", click);
 
   return {
     setMarks(next) {
@@ -228,6 +240,7 @@ export function decoratePreview(
       if (frame) cancelAnimationFrame(frame);
       root.removeEventListener("mousemove", move);
       root.removeEventListener("mouseleave", leave);
+      root.removeEventListener("click", click);
       registry?.delete(name);
       style.remove();
     },

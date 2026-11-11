@@ -23,7 +23,9 @@ import {
 } from "../shared/explain";
 import {
   annotate,
+  appendToFootnote,
   commentPathOf,
+  definesFootnote,
   type Footnote,
   keptLength,
   locateRendered,
@@ -46,10 +48,14 @@ import {
 
 type Theme = PluginFilePanelProps["theme"];
 
-/** What the user selected, and how to find it again in the newest file text. */
+/**
+ * What the user selected, and how to find it again in the newest file text. A `note` selection
+ * comes from a footnote shown in the message panel; its answer joins that footnote.
+ */
 type Anchor =
   | { view: "source"; text: string; range: TextRange }
-  | { view: "preview"; text: string; hint: number };
+  | { view: "preview"; text: string; hint: number }
+  | { view: "note"; text: string; label: string };
 
 interface AskRequest {
   anchor: Anchor;
@@ -57,12 +63,16 @@ interface AskRequest {
   question?: string;
 }
 
-/** What the message panel shows: a status line, the request title, and the answer if any. */
+/**
+ * What the message panel shows: a status line, the request title, and the answer if any. With
+ * `note`, the panel shows that footnote's current content instead of `answer`.
+ */
 interface Message {
-  kind: "pending" | "saved" | "failed";
+  kind: "pending" | "saved" | "failed" | "note";
   title: string;
   status: string;
   answer: string | null;
+  note?: string;
 }
 
 const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문" };
@@ -135,7 +145,8 @@ function DocAskViewer(props: PluginFilePanelProps) {
       const label = MODE_LABEL[mode];
       const subject = mode === "question" && question ? question : anchor.text;
       const title = `${label}: ${subject}`;
-      setMessage({ kind: "pending", title, status: "AI에게 묻는 중…", answer: null });
+      const note = anchor.view === "note" ? anchor.label : undefined;
+      setMessage({ kind: "pending", title, status: "AI에게 묻는 중…", answer: null, note });
       try {
         let answer: string;
         try {
@@ -146,12 +157,13 @@ function DocAskViewer(props: PluginFilePanelProps) {
             selection: anchor.text,
             mode,
             question,
+            context: note === undefined ? undefined : notesRef.current.find((n) => n.label === note)?.content,
           }));
         } catch (cause) {
-          setMessage({ kind: "failed", title, status: `요청 실패: ${messageOf(cause)}`, answer: null });
+          setMessage({ kind: "failed", title, status: `요청 실패: ${messageOf(cause)}`, answer: null, note });
           return;
         }
-        const failed = (status: string) => setMessage({ kind: "failed", title, status, answer });
+        const failed = (status: string) => setMessage({ kind: "failed", title, status, answer, note });
         let latest: string;
         let latestComments: string;
         try {
@@ -161,6 +173,35 @@ function DocAskViewer(props: PluginFilePanelProps) {
           failed(`저장 실패: 파일을 읽지 못했습니다. ${messageOf(cause)}`);
           return;
         }
+
+        if (anchor.view === "note") {
+          // A follow-up joins the footnote it was asked from, in whichever file defines it.
+          const inComments = hasCommentFile && definesFootnote(latestComments, anchor.label);
+          const next = appendToFootnote(inComments ? latestComments : latest, anchor.label, label, subject, answer);
+          if (next === null) {
+            failed("저장 실패: 이 각주를 찾지 못했습니다.");
+            return;
+          }
+          try {
+            if (inComments) {
+              const { status } = await writeComments({ path: file.path, text: next, base: latestComments });
+              if (status === "conflict") {
+                failed("저장 실패: 답을 기다리는 동안 주석 파일이 변경되었습니다.");
+                return;
+              }
+              setComments(next);
+            } else {
+              await file.writeText(next);
+              show(next);
+            }
+          } catch (cause) {
+            failed(writeFailure(cause));
+            return;
+          }
+          setMessage({ kind: "saved", title, status: "각주에 추가했습니다.", answer, note });
+          return;
+        }
+
         const at =
           anchor.view === "source"
             ? locateSelection(latest, anchor.range, anchor.text)
@@ -199,24 +240,28 @@ function DocAskViewer(props: PluginFilePanelProps) {
               .then(() => loadComments())
               .catch(() => undefined);
           }
-          if (cause instanceof PluginFileConflictError) {
-            failed("저장 실패: 답을 기다리는 동안 파일이 디스크에서 변경되었습니다.");
-          } else if (cause instanceof PluginFileDeletedError) {
-            failed("저장 실패: 파일이 삭제되었습니다.");
-          } else {
-            failed(`저장 실패: ${messageOf(cause)}`);
-          }
+          failed(writeFailure(cause));
           return;
         }
         if (hasCommentFile) setComments(annotated.comments);
         show(nextDoc);
-        setMessage({ kind: "saved", title, status: "문서에 반영했습니다.", answer });
+        setMessage({ kind: "saved", title, status: "문서에 반영했습니다.", answer, note: annotated.id });
       } finally {
         busy.current = false;
       }
     },
     [explain, file, hasCommentFile, loadComments, show, toast, workspaceId, writeComments],
   );
+
+  // The notes as currently shown, for requests that need a footnote's latest content.
+  const notesRef = useRef<Footnote[]>([]);
+  notesRef.current = prepared?.notes ?? [];
+
+  /** Shows footnote `number` in the message panel, as right after an answer. */
+  const openNote = useCallback((number: number) => {
+    const note = notesRef.current.find((n) => n.number === number);
+    if (note) setMessage({ kind: "note", title: "", status: `각주 ${number}`, answer: null, note: note.label });
+  }, []);
 
   const onAction = useCallback(
     (anchor: Anchor, mode: AskMode) => {
@@ -352,6 +397,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
           compact={layout.compact}
           overlay={root}
           onHover={onHover}
+          onOpenNote={openNote}
           onAction={onAction}
         />
       ) : (
@@ -362,6 +408,8 @@ function DocAskViewer(props: PluginFilePanelProps) {
           message={message}
           theme={theme}
           maxHeight={Math.max(MESSAGE_MIN_HEIGHT, rootHeight * 0.85)}
+          noteContent={message.note === undefined ? undefined : prepared?.notes.find((n) => n.label === message.note)?.content}
+          onAction={onAction}
           onClose={() => setMessage(null)}
         />
       ) : null}
@@ -370,6 +418,11 @@ function DocAskViewer(props: PluginFilePanelProps) {
           hover={hover}
           note={hoveredNote}
           theme={theme}
+          onOpen={() => {
+            openNote(hover.number);
+            overTip.current = false;
+            setHover(null);
+          }}
           onHoverChange={(over) => {
             overTip.current = over;
             if (!over) setHover(null);
@@ -413,6 +466,7 @@ interface PreviewProps {
   compact: boolean;
   overlay: RefObject<View | null>;
   onHover: (hover: FootnoteHover | null) => void;
+  onOpenNote: (number: number) => void;
   onAction: (anchor: Anchor, mode: AskMode) => void;
 }
 
@@ -420,18 +474,25 @@ interface PreviewProps {
  * Paseo's own Markdown rendering. Highlights and superscript references show their footnote on
  * hover, the notes are listed at the end, and selections get floating ask buttons.
  */
-function PreviewView({ body, notes, marks, theme, compact, overlay, onHover, onAction }: PreviewProps) {
+function PreviewView({ body, notes, marks, theme, compact, overlay, onHover, onOpenNote, onAction }: PreviewProps) {
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
   const decorations = useRef<ReturnType<typeof decoratePreview> | null>(null);
   const onHoverRef = useRef(onHover);
   onHoverRef.current = onHover;
+  const onOpenRef = useRef(onOpenNote);
+  onOpenRef.current = onOpenNote;
 
   useEffect(() => watchSelection(content.current, setSelection), []);
   useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
   useEffect(() => {
-    decorations.current = decoratePreview(content.current, overlay.current, (hover) => onHoverRef.current(hover));
+    decorations.current = decoratePreview(
+      content.current,
+      overlay.current,
+      (hover) => onHoverRef.current(hover),
+      (number) => onOpenRef.current(number),
+    );
     return () => {
       decorations.current?.dispose();
       decorations.current = null;
@@ -497,11 +558,14 @@ function FootnoteTooltip({
   hover,
   note,
   theme,
+  onOpen,
   onHoverChange,
 }: {
   hover: FootnoteHover;
   note: Footnote;
   theme: Theme;
+  /** Pressing the tooltip opens the footnote in the message panel. */
+  onOpen: () => void;
   onHoverChange: (over: boolean) => void;
 }) {
   const width = Math.min(TOOLTIP_WIDTH, hover.width - 16);
@@ -529,8 +593,10 @@ function FootnoteTooltip({
   );
   return (
     <Pressable
-      accessibilityRole="none"
+      accessibilityRole="button"
+      accessibilityLabel="이 각주를 아래 창에 열기"
       style={[style, place, { left, width }]}
+      onPress={onOpen}
       onHoverIn={() => onHoverChange(true)}
       onHoverOut={() => onHoverChange(false)}
     >
@@ -740,14 +806,28 @@ function MessageBox({
   message,
   theme,
   maxHeight,
+  noteContent,
+  onAction,
   onClose,
 }: {
   message: Message;
   theme: Theme;
   maxHeight: number;
+  /** Current content of the footnote the message is about, if any. */
+  noteContent: string | undefined;
+  onAction: (anchor: Anchor, mode: AskMode) => void;
   onClose: () => void;
 }) {
   const toast = useToast();
+  // A footnote shows its latest content, which accumulates follow-ups; a failed save shows the
+  // answer that could not be stored.
+  const showsNote = message.note !== undefined && noteContent !== undefined && message.kind !== "failed";
+  const body = showsNote ? noteContent : message.answer;
+  const content = useRef<View>(null);
+  const actions = useRef<View>(null);
+  const [selection, setSelection] = useState<RenderedSelection | null>(null);
+  useEffect(() => (showsNote ? watchSelection(content.current, setSelection) : undefined), [showsNote]);
+  useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
   const layout = useSettings(layoutSettings);
   const saved = layout.status === "ready" ? layout.values.messageHeight : 220;
   const [dragHeight, setDragHeight] = useState<number | null>(null);
@@ -776,7 +856,7 @@ function MessageBox({
     [],
   );
 
-  const answer = message.answer;
+  const answer = body;
   const styles = useMemo(
     () => ({
       box: {
@@ -807,6 +887,14 @@ function MessageBox({
       },
       quote: { color: theme.colors.foregroundMuted },
       action: { color: theme.colors.accent },
+      actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
+      button: {
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 6,
+        backgroundColor: theme.colors.accent,
+      },
+      buttonLabel: { color: theme.colors.accentForeground },
     }),
     [theme, message.kind],
   );
@@ -831,7 +919,7 @@ function MessageBox({
         <View style={styles.header}>
           <Text style={styles.status}>{status}</Text>
           {answer ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="답 복사" onPress={copyAnswer}>
+            <Pressable accessibilityRole="button" accessibilityLabel="내용 복사" onPress={copyAnswer}>
               <Text style={styles.action}>복사</Text>
             </Pressable>
           ) : null}
@@ -841,10 +929,35 @@ function MessageBox({
             </Pressable>
           ) : null}
         </View>
-        <Text style={styles.quote} numberOfLines={2}>
-          {message.title}
-        </Text>
-        {answer ? <Markdown>{answer}</Markdown> : null}
+        {/* A footnote starts with its own bold title. */}
+        {message.title && !showsNote ? (
+          <Text style={styles.quote} numberOfLines={2}>
+            {message.title}
+          </Text>
+        ) : null}
+        {answer ? (
+          <View ref={content}>
+            <Markdown>{answer}</Markdown>
+            {selection && showsNote && message.note !== undefined ? (
+              <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
+                {ASK_ACTIONS.map((action) => (
+                  <Pressable
+                    key={action.mode}
+                    accessibilityRole="button"
+                    accessibilityLabel={`각주에서 선택한 부분 ${action.label}`}
+                    style={styles.button}
+                    onPress={() => {
+                      onAction({ view: "note", text: selection.text, label: message.note as string }, action.mode);
+                      setSelection(null);
+                    }}
+                  >
+                    <Text style={styles.buttonLabel}>{action.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -887,4 +1000,11 @@ export function DocAskPanel(props: PluginFilePanelProps) {
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** The save-failure line for a rejected document write. */
+function writeFailure(cause: unknown): string {
+  if (cause instanceof PluginFileConflictError) return "저장 실패: 답을 기다리는 동안 파일이 디스크에서 변경되었습니다.";
+  if (cause instanceof PluginFileDeletedError) return "저장 실패: 파일이 삭제되었습니다.";
+  return `저장 실패: ${messageOf(cause)}`;
 }

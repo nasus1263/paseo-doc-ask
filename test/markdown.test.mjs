@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   annotate,
+  appendToFootnote,
   commentPathOf,
+  definesFootnote,
   buildFootnote,
   findBlockEnd,
   fromSuperscript,
@@ -70,6 +72,7 @@ test("annotate highlights and references in the document, defines in the comment
   assert.deepEqual(annotate(doc, "", { from, to: from + 4 }, "질문", "왜?", "답"), {
     doc: "# T\n\nAlpha **==beta==**[^1] gamma.\n\nNext.\n",
     comments: "[^1]: **질문: 왜?**\n\n    답\n",
+    id: "1",
   });
 });
 
@@ -80,6 +83,7 @@ test("annotate numbers past labels in both files and appends to existing comment
   assert.deepEqual(annotate(doc, comments, { from, to: from + 1 }, "설명", "b", "new"), {
     doc: "a ==x==[^1] ==b==[^2]\n",
     comments: "[^1]: **설명: x**\n\n    old\n\n[^2]: **설명: b**\n\n    new\n",
+    id: "2",
   });
 });
 
@@ -143,4 +147,23 @@ test("prepareFootnotes wraps highlights in sentinels and links them to their foo
 test("prepareFootnotes prefers the document's own definition over the comment file", () => {
   const { notes } = prepareFootnotes("x[^1]\n\n[^1]: mine", "[^1]: theirs");
   assert.equal(notes[0].content, "mine");
+});
+
+test("appendToFootnote accumulates follow-ups inside the same footnote", () => {
+  const comments = "[^1]: **설명: x**\n\n    first\n\n    second\n\n[^2]: **설명: y**\n\n    other\n";
+  const next = appendToFootnote(comments, "1", "질문", "왜?", "답 1\n\n답 2");
+  assert.equal(
+    next,
+    "[^1]: **설명: x**\n\n    first\n\n    second\n\n    **질문: 왜?**\n\n    답 1\n\n    답 2\n\n[^2]: **설명: y**\n\n    other\n",
+  );
+  const { notes } = prepareFootnotes("a[^1] b[^2]", next);
+  assert.equal(notes[0].content, "**설명: x**\n\nfirst\n\nsecond\n\n**질문: 왜?**\n\n답 1\n\n답 2");
+  assert.equal(notes[1].content, "**설명: y**\n\nother");
+  assert.equal(appendToFootnote(comments, "9", "설명", "z", "A"), null);
+  assert.ok(definesFootnote(comments, "2"));
+  assert.ok(!definesFootnote(comments, "3"));
+});
+
+test("annotate reports the new footnote label", () => {
+  assert.equal(annotate("a b", "[^4]: x", { from: 2, to: 3 }, "설명", "b", "A").id, "5");
 });

@@ -16,6 +16,8 @@ export const explainRpc = defineRpc({
     /** `term` explains the selection; `question` answers `question` about it. */
     mode: askModeSchema,
     question: z.string().optional(),
+    /** An earlier explanation the selection was taken from, when asking about a footnote. */
+    context: z.string().optional(),
   }),
   output: z.object({ answer: z.string() }),
 });

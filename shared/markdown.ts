@@ -228,7 +228,7 @@ export function annotate(
   label: string,
   subject: string,
   answer: string,
-): { doc: string; comments: string } {
+): { doc: string; comments: string; id: string } {
   const id = nextFootnoteLabel(`${doc}\n${comments}`);
   const ref = `[^${id}]`;
   const mark = highlightRange(doc, at);
@@ -246,7 +246,55 @@ export function annotate(
   return {
     doc: withRef,
     comments: existing === "" ? `${definition}\n` : `${existing}\n\n${definition}\n`,
+    id,
   };
+}
+
+/** Line indexes of the definition of footnote `label` in `lines`: its first and last line. */
+function definitionSpan(lines: string[], label: string): { first: number; last: number } | null {
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (FENCE.test(lines[i])) inFence = !inFence;
+    const def = inFence ? null : FOOTNOTE_DEF.exec(lines[i]);
+    if (!def || def[1] !== label) continue;
+    let last = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (INDENTED.test(lines[j])) last = j;
+      else if (!(lines[j].trim() === "" && j + 1 < lines.length && INDENTED.test(lines[j + 1]))) break;
+    }
+    return { first: i, last };
+  }
+  return null;
+}
+
+/** Whether `text` defines footnote `label`. */
+export function definesFootnote(text: string, label: string): boolean {
+  return definitionSpan(text.split("\n"), label) !== null;
+}
+
+/**
+ * Appends a follow-up to the definition of footnote `label` in `text`: a bold `label: subject`
+ * heading and the answer, indented to stay inside the footnote. Null when `text` does not
+ * define the footnote.
+ */
+export function appendToFootnote(
+  text: string,
+  label: string,
+  heading: string,
+  subject: string,
+  answer: string,
+): string | null {
+  const lines = text.split("\n");
+  const span = definitionSpan(lines, label);
+  if (!span) return null;
+  const flat = subject.replace(/\s+/g, " ").trim();
+  const title = flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX)}…` : flat;
+  const body = answer
+    .trim()
+    .split("\n")
+    .map((line) => (line.trim() === "" ? "" : `    ${line}`));
+  lines.splice(span.last + 1, 0, "", `    **${heading}: ${title}**`, "", ...body);
+  return lines.join("\n");
 }
 
 export interface Footnote {

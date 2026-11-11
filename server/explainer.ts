@@ -149,6 +149,16 @@ function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraP
   } else {
     parts.push(`문서: ${input.path} (길어서 생략됨. 필요하면 Read 도구로 읽어라)`);
   }
+  const context = input.context?.trim();
+  if (context) {
+    parts.push(
+      "",
+      "아래는 이 문서의 한 부분에 대해 앞서 작성된 설명(각주)이다. 선택 부분은 이 설명에서 가져왔다.",
+      "<note>",
+      context,
+      "</note>",
+    );
+  }
   parts.push("", "<selection>", input.selection, "</selection>");
   const question = input.question?.trim();
   if (input.mode === "question" && question) {
