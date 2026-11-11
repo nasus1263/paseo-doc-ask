@@ -540,7 +540,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
           if (memoLabel !== null && (await updateMeta(memoLabel, (meta) => ({ ...meta, memo })))) setMemoLabel(null);
         }}
       />
-      <BookmarksModal
+      <BookmarksPopover
         open={bookmarksOpen}
         workspaceId={workspaceId}
         currentPath={file.path}
@@ -993,8 +993,8 @@ function OtherDocumentBookmark({
     () =>
       onClickCapture(row.current, () => {
         requestJump(documentPath, label);
-        // Close after the link has handled this click.
-        setTimeout(onFollow, 0);
+        // Opening resolves the link asynchronously; keep the list mounted until it has.
+        setTimeout(onFollow, 300);
       }),
     [documentPath, label, onFollow],
   );
@@ -1022,7 +1022,7 @@ function samePath(a: string, b: string): boolean {
  * the open document opens in the message panel; others expand in place, since plugins cannot
  * open file tabs.
  */
-function BookmarksModal({
+function BookmarksPopover({
   open,
   workspaceId,
   currentPath,
@@ -1060,6 +1060,34 @@ function BookmarksModal({
       row: { paddingVertical: 6, gap: 2 },
       title: { color: theme.colors.foreground, fontWeight: "600" as const },
       memo: { color: theme.colors.foregroundMuted },
+      backdrop: { position: "absolute" as const, top: 0, left: 0, right: 0, bottom: 0, zIndex: 19 },
+      popover: {
+        position: "absolute" as const,
+        top: 40,
+        right: 12,
+        width: 420,
+        maxWidth: "92%" as const,
+        maxHeight: "70%" as const,
+        zIndex: 20,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+        shadowColor: "#000",
+        shadowOpacity: 0.2,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      popoverHeader: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        justifyContent: "space-between" as const,
+        paddingHorizontal: 16,
+        paddingTop: 12,
+        paddingBottom: 4,
+      },
+      popoverTitle: { color: theme.colors.foreground, fontWeight: "600" as const },
+      popoverBody: { paddingHorizontal: 16, paddingBottom: 16, gap: 12 },
     }),
     [theme],
   );
@@ -1116,9 +1144,22 @@ function BookmarksModal({
   }
 
   return (
-    <Modal title="북마크" open={open} onOpenChange={(next) => !next && onClose()}>
-      <Modal.Content>{body}</Modal.Content>
-    </Modal>
+    // Drawn inside the panel rather than in a Modal: file links resolve only within the workspace
+    // screen, which owns the handler that opens file tabs.
+    open ? (
+      <>
+        <Pressable accessibilityRole="none" style={styles.backdrop} onPress={onClose} />
+        <View style={styles.popover}>
+          <View style={styles.popoverHeader}>
+            <Text style={styles.popoverTitle}>북마크</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="북마크 목록 닫기" onPress={onClose}>
+              <Text style={styles.secondary}>닫기</Text>
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.popoverBody}>{body}</ScrollView>
+        </View>
+      </>
+    ) : null
   );
 }
 
