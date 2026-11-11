@@ -12,7 +12,7 @@ import {
 import type { RpcOutput } from "@getpaseo/plugin";
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type MutableRefObject, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
+import { type TextInput as NativeTextInput, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import {
   type AskMode,
   bookmarksRpc,
@@ -47,10 +47,14 @@ import {
   keepSelectionOnPress,
   mountViewer,
   onClickCapture,
+  type PreviewSearch,
   type RenderedSelection,
+  searchPreview,
+  watchFindShortcut,
   watchSelection,
   watchVerticalDrag,
 } from "./web";
+import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
 import { useLinkedMarkdown } from "./links";
 
@@ -64,6 +68,16 @@ type Anchor =
   | { view: "source"; text: string; range: TextRange }
   | { view: "preview"; text: string; hint: number }
   | { view: "note"; text: string; label: string };
+
+/**
+ * What the search bar asks the views to show. `nonce` changes on every request, so the view
+ * scrolls back to the current match even when the query and index stay the same.
+ */
+interface SearchRequest {
+  query: string;
+  index: number;
+  nonce: number;
+}
 
 interface AskRequest {
   anchor: Anchor;
@@ -426,6 +440,34 @@ function DocAskViewer(props: PluginFilePanelProps) {
     }
   }, [commit, file, workspaceId]);
 
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState<SearchRequest>({ query: "", index: 0, nonce: 0 });
+  const [searchCount, setSearchCount] = useState(0);
+  const searchInput = useRef<NativeTextInput>(null);
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setTimeout(() => searchInput.current?.focus(), 0);
+  }, []);
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearch((current) => ({ query: "", index: 0, nonce: current.nonce + 1 }));
+    setSearchCount(0);
+  }, []);
+  const setSearchQuery = useCallback(
+    (query: string) => setSearch((current) => ({ query, index: 0, nonce: current.nonce + 1 })),
+    [],
+  );
+  const stepSearch = useCallback(
+    (step: number) =>
+      setSearch((current) => ({
+        ...current,
+        index: stepMatch(current.index, searchCount, step),
+        nonce: current.nonce + 1,
+      })),
+    [searchCount],
+  );
+  useEffect(() => watchFindShortcut(root.current, openSearch), [openSearch]);
+
   const prompt = useSettings(promptSettings);
   const hasPrompt = prompt.status === "ready" && prompt.values.extraPrompt.trim() !== "";
 
@@ -459,6 +501,13 @@ function DocAskViewer(props: PluginFilePanelProps) {
         <View style={styles.spacer} />
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="문서에서 검색 (Ctrl+F)"
+          onPress={searchOpen ? closeSearch : openSearch}
+        >
+          <Text style={searchOpen ? styles.tabActive : styles.tab}>검색</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
           accessibilityLabel="워크스페이스 북마크 목록"
           onPress={() => setBookmarksOpen(true)}
         >
@@ -488,6 +537,17 @@ function DocAskViewer(props: PluginFilePanelProps) {
           <Text style={styles.tab}>{resetting ? "지우는 중…" : "컨텍스트 지우기"}</Text>
         </Pressable>
       </View>
+      {searchOpen ? (
+        <SearchBar
+          theme={theme}
+          inputRef={searchInput}
+          search={search}
+          count={searchCount}
+          onQuery={setSearchQuery}
+          onStep={stepSearch}
+          onClose={closeSearch}
+        />
+      ) : null}
       {loadError ? <Text style={styles.error}>{loadError}</Text> : null}
       {text === null || prepared === null ? (
         loadError ? null : <Loading />
@@ -503,9 +563,11 @@ function DocAskViewer(props: PluginFilePanelProps) {
           onOpenNote={openNote}
           revealRef={revealRef}
           onAction={onAction}
+          search={search}
+          onSearchCount={setSearchCount}
         />
       ) : (
-        <SourceView text={text} theme={theme} onAction={onAction} />
+        <SourceView text={text} theme={theme} onAction={onAction} search={search} onSearchCount={setSearchCount} />
       )}
       {message ? (
         <MessageBox
@@ -595,6 +657,8 @@ interface PreviewProps {
   /** Receives the preview's reveal function while it is mounted. */
   revealRef: MutableRefObject<((number: number) => Promise<boolean>) | null>;
   onAction: (anchor: Anchor, mode: AskMode) => void;
+  search: SearchRequest;
+  onSearchCount: (count: number) => void;
 }
 
 /**
@@ -612,6 +676,8 @@ function PreviewView({
   onOpenNote,
   revealRef,
   onAction,
+  search,
+  onSearchCount,
 }: PreviewProps) {
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
@@ -642,6 +708,20 @@ function PreviewView({
   useEffect(() => {
     decorations.current?.setMarks(marks);
   }, [marks]);
+
+  const finder = useRef<PreviewSearch | null>(null);
+  const onSearchCountRef = useRef(onSearchCount);
+  onSearchCountRef.current = onSearchCount;
+  useEffect(() => {
+    finder.current = searchPreview(content.current, (count) => onSearchCountRef.current(count));
+    return () => {
+      finder.current?.dispose();
+      finder.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    finder.current?.update(search.query, search.index);
+  }, [search]);
 
   const styles = useMemo(
     () => ({
@@ -793,20 +873,115 @@ interface SourceProps {
   text: string;
   theme: Theme;
   onAction: (anchor: Anchor, mode: AskMode) => void;
+  search: SearchRequest;
+  onSearchCount: (count: number) => void;
+}
+
+/** The find bar under the toolbar: Enter goes to the next match, Shift+Enter back, Esc closes. */
+function SearchBar({
+  theme,
+  inputRef,
+  search,
+  count,
+  onQuery,
+  onStep,
+  onClose,
+}: {
+  theme: Theme;
+  inputRef: RefObject<NativeTextInput | null>;
+  search: SearchRequest;
+  count: number;
+  onQuery: (query: string) => void;
+  onStep: (step: number) => void;
+  onClose: () => void;
+}) {
+  const styles = useMemo(
+    () => ({
+      bar: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 10,
+        paddingHorizontal: 16,
+        paddingBottom: 8,
+      },
+      input: {
+        flex: 1,
+        minWidth: 0,
+        maxWidth: 420,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+        color: theme.colors.foreground,
+      },
+      count: { color: theme.colors.foregroundMuted, minWidth: 52 },
+      button: { color: theme.colors.foreground },
+      disabled: { color: theme.colors.foregroundMuted },
+    }),
+    [theme],
+  );
+  const current = count === 0 ? 0 : Math.min(search.index, count - 1) + 1;
+  return (
+    <View style={styles.bar}>
+      <TextInput
+        ref={inputRef}
+        value={search.query}
+        onChangeText={onQuery}
+        placeholder="문서에서 검색"
+        placeholderTextColor={theme.colors.foregroundMuted}
+        accessibilityLabel="문서에서 검색"
+        selectTextOnFocus
+        blurOnSubmit={false}
+        onKeyPress={(event) => {
+          const { key, shiftKey } = event.nativeEvent as { key: string; shiftKey?: boolean };
+          if (key === "Enter") {
+            event.preventDefault();
+            onStep(shiftKey ? -1 : 1);
+          } else if (key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+        }}
+        style={styles.input}
+      />
+      <Text style={styles.count}>{search.query ? `${current}/${count}` : ""}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel="이전 결과" disabled={count === 0} onPress={() => onStep(-1)}>
+        <Text style={count === 0 ? styles.disabled : styles.button}>↑</Text>
+      </Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="다음 결과" disabled={count === 0} onPress={() => onStep(1)}>
+        <Text style={count === 0 ? styles.disabled : styles.button}>↓</Text>
+      </Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="검색 닫기" onPress={onClose}>
+        <Text style={styles.button}>✕</Text>
+      </Pressable>
+    </View>
+  );
 }
 
 /** Read-only CodeMirror source; selections show the ask buttons as an editor tooltip. */
-function SourceView({ text, theme, onAction }: SourceProps) {
+function SourceView({ text, theme, onAction, search, onSearchCount }: SourceProps) {
   const parent = useRef<View>(null);
   const viewer = useRef<DocViewerHandle | null>(null);
   const onActionRef = useRef(onAction);
   onActionRef.current = onAction;
+  const onSearchCountRef = useRef(onSearchCount);
+  onSearchCountRef.current = onSearchCount;
+  const searchRef = useRef(search);
+  searchRef.current = search;
   const initialText = useRef(text);
 
   useLayoutEffect(() => {
-    viewer.current = mountViewer(parent.current, initialText.current, theme, (range, selected, mode) =>
-      onActionRef.current({ view: "source", text: selected, range }, mode),
+    viewer.current = mountViewer(
+      parent.current,
+      initialText.current,
+      theme,
+      (range, selected, mode) => onActionRef.current({ view: "source", text: selected, range }, mode),
+      (count) => onSearchCountRef.current(count),
     );
+    // A theme change mounts a new editor; keep the current search on it.
+    if (searchRef.current.query) viewer.current?.search(searchRef.current.query, searchRef.current.index);
     return () => {
       viewer.current?.destroy();
       viewer.current = null;
@@ -817,6 +992,10 @@ function SourceView({ text, theme, onAction }: SourceProps) {
     initialText.current = text;
     viewer.current?.setText(text);
   }, [text]);
+
+  useEffect(() => {
+    viewer.current?.search(search.query, search.index);
+  }, [search]);
 
   return <View ref={parent} style={{ flex: 1, minHeight: 0 }} />;
 }

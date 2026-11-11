@@ -12,13 +12,20 @@ import {
   superscript,
   type TextRange,
 } from "../shared/markdown";
+import { findMatches } from "../shared/search";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 interface DomEvent {
   type: string;
   clientX: number;
   clientY: number;
+  target?: unknown;
+  key?: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
   preventDefault(): void;
+  stopImmediatePropagation?(): void;
 }
 type DomListener = (event: DomEvent) => void;
 interface DomEvents {
@@ -79,6 +86,7 @@ interface DomStyle {
   textContent: string | null;
   remove(): void;
 }
+declare const window: DomEvents;
 declare function requestAnimationFrame(callback: () => void): number;
 declare function cancelAnimationFrame(handle: number): void;
 declare class MutationObserver {
@@ -99,7 +107,7 @@ interface HighlightRegistry {
 }
 interface HighlightGlobals {
   CSS?: { highlights?: HighlightRegistry };
-  Highlight?: new (...ranges: DomRange[]) => unknown;
+  Highlight?: new (...ranges: DomRange[]) => { priority: number };
 }
 
 /** A hovered footnote: its number and where to float its tooltip. */
@@ -307,6 +315,150 @@ export function decoratePreview(
   };
 }
 
+const SEARCH_COLOR = "rgba(64, 156, 255, 0.35)";
+const SEARCH_CURRENT_COLOR = "rgba(255, 140, 0, 0.7)";
+
+export interface PreviewSearch {
+  /** Highlights every match of `query`, marks match `index` as current, and scrolls to it. */
+  update(query: string, index: number): void;
+  dispose(): void;
+}
+
+let searchCount = 0;
+
+/**
+ * Finds text in rendered Markdown inside `container` and paints the matches through the CSS
+ * Custom Highlight API, leaving the DOM alone. Matches are found again whenever the rendering
+ * changes; `onCount` hears the number of matches after every search.
+ */
+export function searchPreview(container: unknown, onCount: (count: number) => void): PreviewSearch {
+  const none: PreviewSearch = { update() {}, dispose() {} };
+  if (Platform.OS !== "web" || !container) return none;
+  const root = container as DomElement;
+  const globals = globalThis as HighlightGlobals;
+  const registry = globals.CSS?.highlights;
+  const Highlight = globals.Highlight;
+  if (!registry || !Highlight) return none;
+  const name = `doc-ask-search-${++searchCount}`;
+  const currentName = `${name}-current`;
+  const style = document.createElement("style");
+  style.textContent =
+    `::highlight(${name}) { background-color: ${SEARCH_COLOR}; } ` +
+    `::highlight(${currentName}) { background-color: ${SEARCH_CURRENT_COLOR}; }`;
+  document.head.appendChild(style);
+
+  let query = "";
+  let index = 0;
+  let frame = 0;
+
+  /** Ranges of every match, found in the text of all nodes joined so matches cross markup. */
+  const locate = (): DomRange[] => {
+    if (!query) return [];
+    const nodes: DomText[] = [];
+    const starts: number[] = [];
+    let joined = "";
+    const walker = document.createTreeWalker(root, SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      starts.push(joined.length);
+      nodes.push(node);
+      joined += node.textContent ?? "";
+    }
+    // The last node starting at or before `offset` (before it, for an end offset).
+    const point = (offset: number, end: boolean) => {
+      let low = 0;
+      let high = nodes.length - 1;
+      while (low < high) {
+        const mid = (low + high + 1) >> 1;
+        if (end ? starts[mid] < offset : starts[mid] <= offset) low = mid;
+        else high = mid - 1;
+      }
+      return { node: nodes[low], offset: offset - starts[low] };
+    };
+    return findMatches(joined, query).map(({ from, to }) => {
+      const start = point(from, false);
+      const end = point(to, true);
+      const range = document.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      return range;
+    });
+  };
+
+  const paint = (reveal: boolean) => {
+    frame = 0;
+    const ranges = locate();
+    const current = ranges.length === 0 ? -1 : Math.min(index, ranges.length - 1);
+    const others = ranges.filter((_, i) => i !== current);
+    if (others.length > 0) registry.set(name, new Highlight(...others));
+    else registry.delete(name);
+    if (current >= 0) {
+      const highlight = new Highlight(ranges[current]);
+      highlight.priority = 1;
+      registry.set(currentName, highlight);
+      if (reveal) {
+        const element = (ranges[current].startContainer as DomText).parentElement;
+        element?.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    } else {
+      registry.delete(currentName);
+    }
+    onCount(ranges.length);
+  };
+
+  // The renderer may update the DOM after React commits; search again whenever it changes.
+  const observer = new MutationObserver(() => {
+    if (query && !frame) frame = requestAnimationFrame(() => paint(false));
+  });
+  observer.observe(root, { childList: true, subtree: true, characterData: true });
+
+  return {
+    update(nextQuery, nextIndex) {
+      query = nextQuery;
+      index = nextIndex;
+      if (frame) cancelAnimationFrame(frame);
+      paint(true);
+    },
+    dispose() {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+      registry.delete(name);
+      registry.delete(currentName);
+      style.remove();
+    },
+  };
+}
+
+/**
+ * Calls `onFind` on Ctrl+F (⌘F on macOS) while `node` is the panel in use: the last pointer press
+ * landed inside it, or, before any press, it is visible. The browser's own find is suppressed
+ * then. Returns the cleanup.
+ */
+export function watchFindShortcut(node: unknown, onFind: () => void): () => void {
+  if (Platform.OS !== "web" || !node) return () => {};
+  const root = node as DomElement;
+  let pressedInside: boolean | null = null;
+  const visible = () => {
+    const rect = root.getBoundingClientRect();
+    return rect.right > rect.left && rect.bottom > rect.top;
+  };
+  const press: DomListener = (event) => {
+    pressedInside = root.contains(event.target);
+  };
+  const key: DomListener = (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key?.toLowerCase() !== "f") return;
+    if (!visible() || !(pressedInside ?? true)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation?.();
+    onFind();
+  };
+  document.addEventListener("pointerdown", press, true);
+  window.addEventListener("keydown", key, true);
+  return () => {
+    document.removeEventListener("pointerdown", press, true);
+    window.removeEventListener("keydown", key, true);
+  };
+}
+
 interface LocatedMark {
   /** The highlighted text, which is painted. */
   range: DomRange;
@@ -505,6 +657,8 @@ export function keepSelectionOnPress(node: unknown): () => void {
 export interface DocViewerHandle {
   /** Replaces the shown text, touching only the changed range so the scroll position holds. */
   setText(text: string): void;
+  /** Highlights every match of `query`, marks match `index` as current, and scrolls to it. */
+  search(query: string, index: number): void;
   destroy(): void;
 }
 
@@ -516,17 +670,21 @@ export const ASK_ACTIONS: readonly { mode: AskMode; label: string }[] = [
   { mode: "question", label: "질문" },
 ];
 
-/** Read-only Markdown source view; a button appears over every non-empty selection. */
+/**
+ * Read-only Markdown source view; a button appears over every non-empty selection. `onSearchCount`
+ * hears the number of search matches after every search and every text change.
+ */
 export function mountViewer(
   parent: unknown,
   text: string,
   theme: PluginFilePanelProps["theme"],
   onAsk: AskHandler,
+  onSearchCount: (count: number) => void,
 ): DocViewerHandle | null {
   if (Platform.OS !== "web" || !parent) return null;
-  const { EditorState: State, StateField } =
+  const { EditorState: State, StateEffect, StateField } =
     require("@codemirror/state") as typeof import("@codemirror/state");
-  const { EditorView: View, showTooltip } =
+  const { Decoration, EditorView: View, showTooltip } =
     require("@codemirror/view") as typeof import("@codemirror/view");
   const { markdown } =
     require("@codemirror/lang-markdown") as typeof import("@codemirror/lang-markdown");
@@ -571,6 +729,30 @@ export function mountViewer(
     provide: (field) => showTooltip.computeN([field], (state) => state.field(field)),
   });
 
+  interface SearchState {
+    query: string;
+    index: number;
+    matches: TextRange[];
+  }
+  const setSearch = StateEffect.define<SearchState>();
+  const matchMark = Decoration.mark({ class: "cm-doc-ask-match" });
+  const currentMark = Decoration.mark({ class: "cm-doc-ask-match-current" });
+  const searchField = StateField.define<SearchState>({
+    create: () => ({ query: "", index: 0, matches: [] }),
+    update(value, tr: Transaction) {
+      for (const effect of tr.effects) if (effect.is(setSearch)) return effect.value;
+      if (!tr.docChanged || !value.query) return value;
+      return { ...value, matches: findMatches(tr.state.doc.toString(), value.query) };
+    },
+    provide: (field) =>
+      View.decorations.from(field, ({ index, matches }) => {
+        const current = Math.min(index, matches.length - 1);
+        return Decoration.set(
+          matches.map((match, i) => (i === current ? currentMark : matchMark).range(match.from, match.to)),
+        );
+      }),
+  });
+
   const view: EditorView = new View({
     parent: parent as EditorViewConfig["parent"],
     state: State.create({
@@ -581,6 +763,12 @@ export function mountViewer(
         State.readOnly.of(true),
         View.lineWrapping,
         askField,
+        searchField,
+        View.updateListener.of((update) => {
+          if (update.docChanged && update.state.field(searchField).query) {
+            onSearchCount(update.state.field(searchField).matches.length);
+          }
+        }),
         View.contentAttributes.of({ "aria-label": "문서 (읽기 전용)" }),
         View.theme({
           "&": {
@@ -596,6 +784,8 @@ export function mountViewer(
             backgroundColor: "transparent",
             border: "none",
           },
+          ".cm-doc-ask-match": { backgroundColor: SEARCH_COLOR },
+          ".cm-doc-ask-match-current": { backgroundColor: SEARCH_CURRENT_COLOR },
           ".cm-doc-ask-button": {
             backgroundColor: theme.colors.accent,
             color: theme.colors.accentForeground,
@@ -631,6 +821,17 @@ export function mountViewer(
           insert: next.slice(start, next.length - end),
         },
       });
+    },
+    search(query, index) {
+      const matches = findMatches(view.state.doc.toString(), query);
+      const current = matches[Math.min(index, matches.length - 1)];
+      view.dispatch({
+        effects: [
+          setSearch.of({ query, index, matches }),
+          ...(current ? [View.scrollIntoView(current.from, { y: "center" })] : []),
+        ],
+      });
+      onSearchCount(matches.length);
     },
     destroy() {
       view.destroy();
