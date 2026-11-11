@@ -4,6 +4,8 @@ import {
   buildCallout,
   findBlockEnd,
   insertAnswer,
+  keptLength,
+  locateRendered,
   locateSelection,
 } from "../shared/markdown.ts";
 
@@ -38,10 +40,23 @@ test("insertAnswer places a callout after the paragraph", () => {
   );
 });
 
-test("insertAnswer appends at end of document and returns null when passage is gone", () => {
+test("insertAnswer appends at end of document", () => {
   const text = "only line";
   assert.equal(insertAnswer(text, { from: 0, to: 4 }, "only", "A"), "only line\n\n> [!note] 질문: only\n>\n> A\n");
-  assert.equal(insertAnswer(text, { from: 0, to: 4 }, "gone", "A"), null);
+});
+
+test("locateRendered maps rendered text across markup and link targets", () => {
+  const source = "# 제목\n\n이것은 **멱등성**(idempotency)과 [재시도 큐](https://x.y/z)다.\n";
+  const found = locateRendered(source, "멱등성(idempotency)과 재시도 큐");
+  assert.equal(source.slice(found.from, found.to), "멱등성**(idempotency)과 [재시도 큐");
+  assert.equal(locateRendered(source, "없는 문장"), null);
+});
+
+test("locateRendered prefers the occurrence nearest the rendered prefix", () => {
+  const source = "- 큐 하나\n- 둘\n\n세 번째 큐\n";
+  const rendered = "• 큐 하나\n• 둘\n세 번째 ";
+  const found = locateRendered(source, "큐", keptLength(rendered));
+  assert.equal(found.from, source.lastIndexOf("큐"));
 });
 
 test("buildCallout truncates long titles and flattens whitespace", () => {

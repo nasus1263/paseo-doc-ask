@@ -20,6 +20,45 @@ export function locateSelection(text: string, range: TextRange, selected: string
   return best === null ? null : { from: best, to: best + selected.length };
 }
 
+/** Characters that rendered Markdown drops or adds: whitespace, markup, bullets, escapes. */
+const MARKUP = /[\s*_`~#>[\]|\-+•\\]/;
+
+/**
+ * Maps text selected in rendered Markdown back to a source range. Both sides drop markup
+ * characters and link targets, then the occurrence nearest to `hint` wins. `hint` is the count
+ * of kept characters before the selection in the rendered text.
+ */
+export function locateRendered(source: string, selected: string, hint = 0): TextRange | null {
+  const needle = [...selected].filter((ch) => !MARKUP.test(ch)).join("");
+  if (needle === "") return null;
+  let plain = "";
+  const map: number[] = [];
+  for (let i = 0; i < source.length; i++) {
+    if (source.startsWith("](", i)) {
+      const close = source.indexOf(")", i + 2);
+      if (close !== -1 && !source.slice(i, close).includes("\n")) {
+        i = close;
+        continue;
+      }
+    }
+    const ch = source[i];
+    if (MARKUP.test(ch)) continue;
+    plain += ch;
+    map.push(i);
+  }
+  let best: number | null = null;
+  for (let i = plain.indexOf(needle); i !== -1; i = plain.indexOf(needle, i + 1)) {
+    if (best === null || Math.abs(i - hint) < Math.abs(best - hint)) best = i;
+  }
+  if (best === null) return null;
+  return { from: map[best], to: map[best + needle.length - 1] + 1 };
+}
+
+/** Number of characters `locateRendered` keeps in `text`; turns a rendered prefix into a hint. */
+export function keptLength(text: string): number {
+  return [...text].filter((ch) => !MARKUP.test(ch)).length;
+}
+
 /**
  * Offset where a block may be inserted after the block containing `end`: the first blank line
  * at or after that line, skipping fenced code; or the line after a fence that closes there; or
@@ -63,14 +102,7 @@ export function insertBlock(text: string, offset: number, block: string): string
   return `${before}\n\n${block}\n\n${after}`;
 }
 
-/** Inserts the answer callout after the block holding the selection, or null if it is gone. */
-export function insertAnswer(
-  text: string,
-  range: TextRange,
-  selected: string,
-  answer: string,
-): string | null {
-  const found = locateSelection(text, range, selected);
-  if (!found) return null;
-  return insertBlock(text, findBlockEnd(text, found.to), buildCallout(selected, answer));
+/** Inserts the answer callout after the block holding `at`. */
+export function insertAnswer(text: string, at: TextRange, question: string, answer: string): string {
+  return insertBlock(text, findBlockEnd(text, at.to), buildCallout(question, answer));
 }
