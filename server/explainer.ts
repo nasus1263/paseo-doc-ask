@@ -14,12 +14,13 @@ const MAX_INLINE_CHARS = 120_000;
 const ROTATE_AT_TOKENS = 150_000;
 
 const SYSTEM_PROMPT = [
-  "너는 문서 해설자다. 사용자가 문서를 읽다가 이해하기 어려운 부분을 선택해 물어보면 쉽게 설명한다.",
+  "너는 문서 해설자다. 사용자는 문서를 읽다가 선택한 부분을 설명해 달라고 하거나, 그 부분에 대해 질문한다.",
   "규칙:",
   "- 파일을 수정하거나 명령을 실행하지 않는다. 문서는 메시지로 전달된다.",
-  "- 제목, 인사, 서두 없이 설명 본문만 Markdown으로 출력한다.",
-  "- 2~6문장으로 짧게 쓴다. 필요하면 짧은 예시나 비유를 든다.",
+  "- 제목, 인사, 서두 없이 답 본문만 Markdown으로 출력한다.",
+  "- 기본은 2~6문장으로 짧게 쓴다. 필요하면 짧은 예시나 비유를 든다.",
   "- 문서와 같은 언어로 답한다.",
+  "- 메시지에 <instructions>가 있으면 위 기본 규칙보다 그것을 우선한다.",
 ].join("\n");
 
 /** Per-workspace agent IDs, and the document text each agent has already seen, by path. */
@@ -35,8 +36,10 @@ function enqueue<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
   return next;
 }
 
-export function explain(input: RpcInput<typeof explainRpc>, { paseo }: PluginHandlerContext) {
-  return enqueue(input.workspaceId, () => ask(paseo, input));
+/** The explain handler; `readExtraPrompt` supplies the user's extra instructions per question. */
+export function createExplain(readExtraPrompt: () => Promise<string>) {
+  return (input: RpcInput<typeof explainRpc>, { paseo }: PluginHandlerContext) =>
+    enqueue(input.workspaceId, async () => ask(paseo, input, await readExtraPrompt()));
 }
 
 /** Retires the workspace's explainer after any running question; the next question starts fresh. */
@@ -44,12 +47,16 @@ export function resetContext(input: RpcInput<typeof resetRpc>, { paseo }: Plugin
   return enqueue(input.workspaceId, async () => ({ retired: await retire(paseo, input.workspaceId) }));
 }
 
-async function ask(paseo: Paseo, input: RpcInput<typeof explainRpc>): Promise<{ answer: string }> {
+async function ask(
+  paseo: Paseo,
+  input: RpcInput<typeof explainRpc>,
+  extraPrompt: string,
+): Promise<{ answer: string }> {
   const agentId = await residentAgent(paseo, input.workspaceId);
   const agent = paseo.agents.ref(agentId);
   let result;
   try {
-    result = await agent.run(buildPrompt(agentId, input), { timeoutMs: RUN_TIMEOUT_MS });
+    result = await agent.run(buildPrompt(agentId, input, extraPrompt), { timeoutMs: RUN_TIMEOUT_MS });
   } catch (cause) {
     // The agent may have been archived or deleted; find or create it again next time.
     agentIds.delete(input.workspaceId);
@@ -132,7 +139,7 @@ async function residentAgent(paseo: Paseo, workspaceId: string): Promise<string>
   return id;
 }
 
-function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>): string {
+function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraPrompt: string): string {
   const known = seenDocs.get(agentId)?.get(input.path) === input.document;
   const parts: string[] = [];
   if (known) {
@@ -142,7 +149,15 @@ function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>): strin
   } else {
     parts.push(`문서: ${input.path} (길어서 생략됨. 필요하면 Read 도구로 읽어라)`);
   }
-  parts.push("", "다음 부분이 이해하기 어렵다. 쉽게 설명해 줘.", "<selection>", input.selection, "</selection>");
+  parts.push("", "<selection>", input.selection, "</selection>");
+  const question = input.question?.trim();
+  if (input.mode === "question" && question) {
+    parts.push("위 선택 부분에 대한 질문에 답해 줘.", "<question>", question, "</question>");
+  } else {
+    parts.push("위 선택 부분이 이해하기 어렵다. 쉽게 설명해 줘.");
+  }
+  const extra = extraPrompt.trim();
+  if (extra) parts.push("<instructions>", extra, "</instructions>");
   return parts.join("\n");
 }
 

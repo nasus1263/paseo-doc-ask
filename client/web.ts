@@ -2,10 +2,16 @@ import type { PluginFilePanelProps } from "@getpaseo/plugin/client";
 import type { EditorState, Transaction } from "@codemirror/state";
 import type { EditorView, EditorViewConfig, Tooltip } from "@codemirror/view";
 import { Platform } from "react-native";
+import type { AskMode } from "../shared/explain";
 import type { TextRange } from "../shared/markdown";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
-type DomListener = (event: { preventDefault(): void }) => void;
+interface DomEvent {
+  clientX: number;
+  clientY: number;
+  preventDefault(): void;
+}
+type DomListener = (event: DomEvent) => void;
 interface DomEvents {
   addEventListener(type: string, listener: DomListener): void;
   removeEventListener(type: string, listener: DomListener): void;
@@ -14,6 +20,10 @@ interface DomButton extends DomEvents {
   className: string;
   textContent: string | null;
   type: string;
+}
+interface DomDiv {
+  className: string;
+  appendChild(child: unknown): void;
 }
 interface DomRect {
   top: number;
@@ -25,6 +35,10 @@ interface DomElement extends DomEvents {
   contains(node: unknown): boolean;
   getBoundingClientRect(): DomRect;
 }
+interface DomText {
+  nodeType: number;
+  textContent: string | null;
+}
 interface DomRange {
   startContainer: unknown;
   startOffset: number;
@@ -33,6 +47,7 @@ interface DomRange {
   getClientRects(): ArrayLike<DomRect>;
   getBoundingClientRect(): DomRect;
   selectNodeContents(node: unknown): void;
+  setStart(node: unknown, offset: number): void;
   setEnd(node: unknown, offset: number): void;
 }
 interface DomSelection {
@@ -42,9 +57,73 @@ interface DomSelection {
 }
 declare const document: DomEvents & {
   createElement(tag: "button"): DomButton;
+  createElement(tag: "div"): DomDiv;
   createRange(): DomRange;
   getSelection(): DomSelection | null;
+  caretRangeFromPoint?(x: number, y: number): DomRange | null;
 };
+
+const TEXT_NODE = 3;
+const SUPERSCRIPT_DIGIT = /[⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+
+/** A hovered footnote reference: the superscript run and where to float its tooltip. */
+export interface FootnoteHover {
+  text: string;
+  /** Tooltip position relative to the container's top-left corner. */
+  top: number;
+  left: number;
+}
+
+/**
+ * Reports the superscript footnote reference under the pointer inside `container`, and null
+ * when the pointer leaves it. Reports only changes. Returns the unsubscribe function.
+ */
+export function watchFootnoteHover(
+  container: unknown,
+  onChange: (hover: FootnoteHover | null) => void,
+): () => void {
+  if (Platform.OS !== "web" || !container || !document.caretRangeFromPoint) return () => {};
+  const root = container as DomElement;
+  let last: string | null = null;
+  const report = (hover: FootnoteHover | null) => {
+    const key = hover ? `${hover.text}@${hover.top},${hover.left}` : null;
+    if (key === last) return;
+    last = key;
+    onChange(hover);
+  };
+  const move: DomListener = (event) => {
+    const caret = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+    const node = caret?.startContainer as DomText | undefined;
+    if (!caret || !node || node.nodeType !== TEXT_NODE || !root.contains(node)) return report(null);
+    const text = node.textContent ?? "";
+    let start = caret.startOffset;
+    if (!SUPERSCRIPT_DIGIT.test(text[start] ?? "")) start--;
+    if (!SUPERSCRIPT_DIGIT.test(text[start] ?? "")) return report(null);
+    let end = start + 1;
+    while (start > 0 && SUPERSCRIPT_DIGIT.test(text[start - 1])) start--;
+    while (end < text.length && SUPERSCRIPT_DIGIT.test(text[end])) end++;
+    const run = document.createRange();
+    run.setStart(node, start);
+    run.setEnd(node, end);
+    const rect = run.getBoundingClientRect();
+    const slack = 3;
+    const inside =
+      event.clientX >= rect.left - slack &&
+      event.clientX <= rect.right + slack &&
+      event.clientY >= rect.top - slack &&
+      event.clientY <= rect.bottom + slack;
+    if (!inside) return report(null);
+    const box = root.getBoundingClientRect();
+    report({ text: text.slice(start, end), top: rect.bottom - box.top + 4, left: Math.max(0, rect.left - box.left - 12) });
+  };
+  const leave: DomListener = () => report(null);
+  root.addEventListener("mousemove", move);
+  root.addEventListener("mouseleave", leave);
+  return () => {
+    root.removeEventListener("mousemove", move);
+    root.removeEventListener("mouseleave", leave);
+  };
+}
 
 /** Text selected in rendered Markdown, with where to float the ask button. */
 export interface RenderedSelection {
@@ -86,7 +165,7 @@ export function watchSelection(
       text,
       prefix: before.toString(),
       top: end.bottom - box.top + 6,
-      left: Math.max(0, end.right - box.left - 96),
+      left: Math.max(0, end.right - box.left - 120),
     });
   };
   const collapse = () => {
@@ -117,9 +196,13 @@ export interface DocViewerHandle {
   destroy(): void;
 }
 
-export type AskHandler = (range: TextRange, selected: string) => void;
+export type AskHandler = (range: TextRange, selected: string, mode: AskMode) => void;
 
-const ASK_LABEL = "AI에게 묻기";
+/** Labels of the actions offered over a selection, in display order. */
+export const ASK_ACTIONS: readonly { mode: AskMode; label: string }[] = [
+  { mode: "term", label: "설명" },
+  { mode: "question", label: "질문" },
+];
 
 /** Read-only Markdown source view; a button appears over every non-empty selection. */
 export function mountViewer(
@@ -151,14 +234,19 @@ export function mountViewer(
         strictSide: true,
         arrow: false,
         create() {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "cm-doc-ask-button";
-          button.textContent = ASK_LABEL;
-          // Keep the editor selection when the button is pressed.
-          button.addEventListener("mousedown", (event) => event.preventDefault());
-          button.addEventListener("click", () => onAsk(range, selected));
-          return { dom: button as never };
+          const bar = document.createElement("div");
+          bar.className = "cm-doc-ask-actions";
+          for (const action of ASK_ACTIONS) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "cm-doc-ask-button";
+            button.textContent = action.label;
+            // Keep the editor selection when the button is pressed.
+            button.addEventListener("mousedown", (event) => event.preventDefault());
+            button.addEventListener("click", () => onAsk(range, selected, action.mode));
+            bar.appendChild(button);
+          }
+          return { dom: bar as never };
         },
       },
     ];
@@ -190,7 +278,13 @@ export function mountViewer(
           },
           ".cm-scroller": { overflow: "auto" },
           ".cm-content": { padding: "16px", caretColor: theme.colors.foreground },
-          ".cm-tooltip.cm-doc-ask-button": {
+          ".cm-tooltip.cm-doc-ask-actions": {
+            display: "flex",
+            gap: "6px",
+            backgroundColor: "transparent",
+            border: "none",
+          },
+          ".cm-doc-ask-button": {
             backgroundColor: theme.colors.accent,
             color: theme.colors.accentForeground,
             border: "none",

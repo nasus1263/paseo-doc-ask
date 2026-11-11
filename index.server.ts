@@ -1,9 +1,14 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { explain, resetContext } from "./server/explainer";
-import { explainRpc, resetRpc } from "./shared/explain";
+import { createExplain, resetContext } from "./server/explainer";
+import { explainRpc, promptSettings, resetRpc } from "./shared/explain";
 
 export default function contribute(server: PluginServerContext) {
-  server.handle(explainRpc, explain);
+  const settings = server.registerSettings(promptSettings);
+  const readExtraPrompt = async () => {
+    const state = await settings.read();
+    return state.status === "ready" ? state.values.extraPrompt : "";
+  };
+  server.handle(explainRpc, createExplain(readExtraPrompt));
   server.handle(resetRpc, resetContext);
   return () => {};
 }
