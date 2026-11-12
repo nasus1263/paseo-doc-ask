@@ -10,14 +10,12 @@ import {
   commentsWriteRpc,
   commitRpc,
   explainRpc,
-  layoutSettings,
   promptSettings,
   resetRpc,
 } from "./shared/explain";
 import { resolveLinksRpc } from "./shared/links";
 
 export default function contribute(server: PluginServerContext) {
-  server.registerSettings(layoutSettings);
   const settings = server.registerSettings(promptSettings);
   const readExtraPrompt = async () => {
     const state = await settings.read();

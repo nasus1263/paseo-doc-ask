@@ -20,7 +20,6 @@ import {
   commentsWriteRpc,
   commitRpc,
   explainRpc,
-  layoutSettings,
   promptSettings,
   resetRpc,
 } from "../shared/explain";
@@ -52,10 +51,20 @@ import {
   searchPreview,
   watchFindShortcut,
   watchSelection,
-  watchVerticalDrag,
 } from "./web";
 import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
+import { openNotesPanel } from "./host";
+import {
+  type Message,
+  type NoteSelection,
+  type NotesActions,
+  type NotesSnapshot,
+  publishNotes,
+  publishNotesIfIdle,
+  refreshNotes,
+  withdrawNotes,
+} from "./notes-store";
 import { useLinkedMarkdown } from "./links";
 
 type Theme = PluginFilePanelProps["theme"];
@@ -85,22 +94,10 @@ interface AskRequest {
   question?: string;
 }
 
-/**
- * What the message panel shows: a status line, the request title, and the answer if any. With
- * `note`, the panel shows that footnote's current content instead of `answer`.
- */
-interface Message {
-  kind: "pending" | "saved" | "failed" | "note";
-  title: string;
-  status: string;
-  answer: string | null;
-  note?: string;
-}
 
 const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문" };
 const TOOLTIP_WIDTH = 380;
 const TOOLTIP_MAX_HEIGHT = 300;
-const MESSAGE_MIN_HEIGHT = 80;
 
 const viewSchema = z.object({ view: z.enum(["preview", "source"]) });
 const defaultView = { view: "preview" } as const;
@@ -113,9 +110,16 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const latestText = useRef("");
   const busy = useRef(false);
   const root = useRef<View>(null);
-  const [rootHeight, setRootHeight] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
+  // The side "주석" panel follows this viewer once it publishes; the latest state is kept here.
+  const owner = useRef(Symbol("doc-ask-viewer")).current;
+  const snapshotRef = useRef<NotesSnapshot | null>(null);
+  /** Makes the side panel follow this document and opens it. */
+  const showSidePanel = useCallback(() => {
+    if (snapshotRef.current) publishNotes(snapshotRef.current);
+    openNotesPanel(workspaceId);
+  }, [workspaceId]);
   const [questionAnchor, setQuestionAnchor] = useState<Anchor | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const explain = useRpc(explainRpc);
@@ -171,6 +175,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
       const title = `${label}: ${subject}`;
       const note = anchor.view === "note" ? anchor.label : undefined;
       setMessage({ kind: "pending", title, status: "AI에게 묻는 중…", answer: null, note });
+      showSidePanel();
       try {
         let answer: string;
         try {
@@ -281,18 +286,20 @@ function DocAskViewer(props: PluginFilePanelProps) {
         busy.current = false;
       }
     },
-    [explain, file, hasCommentFile, loadComments, show, toast, workspaceId, writeComments],
+    [explain, file, hasCommentFile, loadComments, show, showSidePanel, toast, workspaceId, writeComments],
   );
 
   // The notes as currently shown, for requests that need a footnote's latest content.
   const notesRef = useRef<Footnote[]>([]);
   notesRef.current = prepared?.notes ?? [];
 
-  /** Shows footnote `number` in the message panel, as right after an answer. */
+  /** Shows footnote `number` in the side panel, as right after an answer. */
   const openNote = useCallback((number: number) => {
     const note = notesRef.current.find((n) => n.number === number);
-    if (note) setMessage({ kind: "note", title: "", status: `각주 ${number}`, answer: null, note: note.label });
-  }, []);
+    if (!note) return;
+    setMessage({ kind: "note", title: "", status: `각주 ${number}`, answer: null, note: note.label });
+    showSidePanel();
+  }, [showSidePanel]);
 
   /** Rewrites footnote `label`'s bookmark and memo in whichever file defines it. */
   const updateMeta = useCallback(
@@ -468,6 +475,43 @@ function DocAskViewer(props: PluginFilePanelProps) {
   );
   useEffect(() => watchFindShortcut(root.current, openSearch), [openSearch]);
 
+  // What the side panel shows and does for this document. Actions stay stable and call the latest.
+  const actionsRef = useRef<NotesActions | null>(null);
+  actionsRef.current = {
+    ask: (selection, mode) => onAction({ view: "note", text: selection.text, label: selection.label }, mode),
+    toggleBookmark: (label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
+    editMemo: setMemoLabel,
+    openNote: jumpTo,
+    closeMessage: () => setMessage(null),
+  };
+  const actions = useMemo<NotesActions>(
+    () => ({
+      ask: (selection, mode) => actionsRef.current?.ask(selection, mode),
+      toggleBookmark: (label) => actionsRef.current?.toggleBookmark(label),
+      editMemo: (label) => actionsRef.current?.editMemo(label),
+      openNote: (label) => actionsRef.current?.openNote(label),
+      closeMessage: () => actionsRef.current?.closeMessage(),
+    }),
+    [],
+  );
+  snapshotRef.current = {
+    owner,
+    workspaceId,
+    path: file.path,
+    name: file.name,
+    notes: prepared?.notes ?? [],
+    message,
+    actions,
+  };
+  useEffect(() => {
+    if (snapshotRef.current) refreshNotes(snapshotRef.current);
+  }, [prepared, message, file]);
+  useEffect(() => {
+    // A panel with nothing to show follows the document that opened first.
+    if (snapshotRef.current) publishNotesIfIdle(snapshotRef.current);
+    return () => withdrawNotes(owner);
+  }, [owner]);
+
   const prompt = useSettings(promptSettings);
   const hasPrompt = prompt.status === "ready" && prompt.values.extraPrompt.trim() !== "";
 
@@ -484,7 +528,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
   );
 
   return (
-    <View ref={root} style={styles.panel} onLayout={(event) => setRootHeight(event.nativeEvent.layout.height)}>
+    <View ref={root} style={styles.panel}>
       <View style={styles.toolbar}>
         {(["preview", "source"] as const).map((id) => (
           <Pressable
@@ -569,18 +613,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
       ) : (
         <SourceView text={text} theme={theme} onAction={onAction} search={search} onSearchCount={setSearchCount} />
       )}
-      {message ? (
-        <MessageBox
-          message={message}
-          theme={theme}
-          maxHeight={Math.max(MESSAGE_MIN_HEIGHT, rootHeight * 0.85)}
-          note={message.note === undefined ? undefined : prepared?.notes.find((n) => n.label === message.note)}
-          onToggleBookmark={(label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark }))}
-          onEditMemo={setMemoLabel}
-          onAction={onAction}
-          onClose={() => setMessage(null)}
-        />
-      ) : null}
       {hover && hoveredNote ? (
         <FootnoteTooltip
           hover={hover}
@@ -1384,23 +1416,24 @@ function modalStyles(theme: Theme) {
   };
 }
 
-/** The request status and answer, resizable from its top edge; the height is saved. */
-function MessageBox({
+/**
+ * The open footnote, or a request's status and answer, as the side "주석" panel shows it.
+ * Selecting text in a shown footnote offers 설명/질문 whose answers join that footnote.
+ */
+export function NoteDetail({
   message,
   theme,
-  maxHeight,
   note,
-  onAction,
+  onAsk,
   onToggleBookmark,
   onEditMemo,
   onClose,
 }: {
   message: Message;
   theme: Theme;
-  maxHeight: number;
   /** The footnote the message is about, with its current content, if any. */
   note: Footnote | undefined;
-  onAction: (anchor: Anchor, mode: AskMode) => void;
+  onAsk: (selection: NoteSelection, mode: AskMode) => void;
   onToggleBookmark: (label: string) => void;
   onEditMemo: (label: string) => void;
   onClose: () => void;
@@ -1409,62 +1442,20 @@ function MessageBox({
   // A footnote shows its latest content, which accumulates follow-ups; a failed save shows the
   // answer that could not be stored.
   const showsNote = message.note !== undefined && note !== undefined && message.kind !== "failed";
-  const body = showsNote ? note.content : message.answer;
+  const answer = showsNote ? note.content : message.answer;
   const memo = showsNote ? note.meta.memo : undefined;
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
   useEffect(() => (showsNote ? watchSelection(content.current, setSelection) : undefined), [showsNote]);
   useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
-  const layout = useSettings(layoutSettings);
-  const saved = layout.status === "ready" ? layout.values.messageHeight : 220;
-  const [dragHeight, setDragHeight] = useState<number | null>(null);
-  const height = Math.min(maxHeight, Math.max(MESSAGE_MIN_HEIGHT, dragHeight ?? saved));
-  const handle = useRef<View>(null);
-  const live = useRef({ height, start: height, maxHeight, layout });
-  live.current = { ...live.current, height, maxHeight, layout };
 
-  useEffect(
-    () =>
-      watchVerticalDrag(handle.current, {
-        start() {
-          live.current.start = live.current.height;
-        },
-        move(dy) {
-          const next = live.current.start - dy;
-          setDragHeight(Math.round(Math.min(live.current.maxHeight, Math.max(MESSAGE_MIN_HEIGHT, next))));
-        },
-        end() {
-          const current = live.current.layout;
-          const value = Math.round(live.current.height);
-          if (current.status !== "ready") return;
-          void current.save({ messageHeight: value }, current.revision).then(() => setDragHeight(null));
-        },
-      }),
-    [],
-  );
-
-  const answer = body;
   const styles = useMemo(
     () => ({
-      box: {
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border,
-        backgroundColor: theme.colors.surface1,
-      },
-      handle: {
-        height: 8,
-        alignItems: "center" as const,
-        justifyContent: "center" as const,
-        // react-native-web passes the CSS cursor through; the RN type lists fewer values.
-        cursor: "row-resize",
-      } as unknown as ViewStyle,
-      grip: { width: 36, height: 3, borderRadius: 2, backgroundColor: theme.colors.border },
-      scroll: { flex: 1, minHeight: 0 },
-      content: { paddingHorizontal: 16, paddingBottom: 16, gap: 8 },
-      header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12 },
+      box: { gap: 8 },
+      header: { flexDirection: "row" as const, alignItems: "center" as const, flexWrap: "wrap" as const, gap: 12 },
       status: {
-        flex: 1,
+        flexGrow: 1,
         fontWeight: "600" as const,
         color:
           message.kind === "failed"
@@ -1495,7 +1486,6 @@ function MessageBox({
     }),
     [theme, message.kind],
   );
-  const status = message.status;
 
   async function copyAnswer() {
     if (!answer) return;
@@ -1508,76 +1498,71 @@ function MessageBox({
   }
 
   return (
-    <View style={[styles.box, { height }]}>
-      <View ref={handle} style={styles.handle} accessibilityLabel="메시지 창 높이 조절">
-        <View style={styles.grip} />
-      </View>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <Text style={styles.status}>{status}</Text>
-          {showsNote ? (
-            <>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={note.meta.bookmark ? "북마크 해제" : "북마크"}
-                onPress={() => onToggleBookmark(note.label)}
-              >
-                <Text style={styles.action}>{note.meta.bookmark ? "★ 북마크" : "☆ 북마크"}</Text>
-              </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel="메모 편집" onPress={() => onEditMemo(note.label)}>
-                <Text style={styles.action}>메모</Text>
-              </Pressable>
-            </>
-          ) : null}
-          {answer ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="내용 복사" onPress={copyAnswer}>
-              <Text style={styles.action}>복사</Text>
+    <View style={styles.box}>
+      <View style={styles.header}>
+        <Text style={styles.status}>{message.status}</Text>
+        {showsNote ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={note.meta.bookmark ? "북마크 해제" : "북마크"}
+              onPress={() => onToggleBookmark(note.label)}
+            >
+              <Text style={styles.action}>{note.meta.bookmark ? "★ 북마크" : "☆ 북마크"}</Text>
             </Pressable>
-          ) : null}
-          {message.kind !== "pending" ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="메시지 닫기" onPress={onClose}>
-              <Text style={styles.action}>닫기</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="메모 편집" onPress={() => onEditMemo(note.label)}>
+              <Text style={styles.action}>메모</Text>
             </Pressable>
-          ) : null}
-        </View>
-        {memo ? (
-          <View style={styles.memo}>
-            <Text style={styles.memoLabel}>메모</Text>
-            <Text selectable style={styles.memoText}>
-              {memo}
-            </Text>
-          </View>
-        ) : null}
-        {/* A footnote starts with its own bold title. */}
-        {message.title && !showsNote ? (
-          <Text style={styles.quote} numberOfLines={2}>
-            {message.title}
-          </Text>
+          </>
         ) : null}
         {answer ? (
-          <View ref={content}>
-            <Markdown>{answer}</Markdown>
-            {selection && showsNote && message.note !== undefined ? (
-              <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
-                {ASK_ACTIONS.map((action) => (
-                  <Pressable
-                    key={action.mode}
-                    accessibilityRole="button"
-                    accessibilityLabel={`각주에서 선택한 부분 ${action.label}`}
-                    style={styles.button}
-                    onPress={() => {
-                      onAction({ view: "note", text: selection.text, label: message.note as string }, action.mode);
-                      setSelection(null);
-                    }}
-                  >
-                    <Text style={styles.buttonLabel}>{action.label}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
-          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="내용 복사" onPress={copyAnswer}>
+            <Text style={styles.action}>복사</Text>
+          </Pressable>
         ) : null}
-      </ScrollView>
+        {message.kind !== "pending" ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="닫기" onPress={onClose}>
+            <Text style={styles.action}>닫기</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {memo ? (
+        <View style={styles.memo}>
+          <Text style={styles.memoLabel}>메모</Text>
+          <Text selectable style={styles.memoText}>
+            {memo}
+          </Text>
+        </View>
+      ) : null}
+      {/* A footnote starts with its own bold title. */}
+      {message.title && !showsNote ? (
+        <Text style={styles.quote} numberOfLines={2}>
+          {message.title}
+        </Text>
+      ) : null}
+      {answer ? (
+        <View ref={content}>
+          <Markdown>{answer}</Markdown>
+          {selection && showsNote && message.note !== undefined ? (
+            <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
+              {ASK_ACTIONS.map((action) => (
+                <Pressable
+                  key={action.mode}
+                  accessibilityRole="button"
+                  accessibilityLabel={`각주에서 선택한 부분 ${action.label}`}
+                  style={styles.button}
+                  onPress={() => {
+                    onAsk({ text: selection.text, label: message.note as string }, action.mode);
+                    setSelection(null);
+                  }}
+                >
+                  <Text style={styles.buttonLabel}>{action.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }

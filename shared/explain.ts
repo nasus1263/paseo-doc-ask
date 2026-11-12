@@ -37,14 +37,6 @@ export const promptSettings = defineSettings({
   schema: z.object({ extraPrompt: z.string().default("") }),
 });
 
-/** Panel layout preferences. The installed SDK supports only host-scoped settings. */
-export const layoutSettings = defineSettings({
-  id: "layout",
-  scope: "host",
-  version: 1,
-  schema: z.object({ messageHeight: z.number().int().min(60).max(4000).default(220) }),
-});
-
 /** Asks the workspace's explainer to commit only the footnote changes of a document. */
 export const commitRpc = defineRpc({
   name: "doc-ask.commit-footnotes",

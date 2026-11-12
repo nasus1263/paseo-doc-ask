@@ -839,42 +839,6 @@ export function mountViewer(
   };
 }
 
-/** Reports vertical mouse drags that start on `handle`. Returns the cleanup. */
-export function watchVerticalDrag(
-  handle: unknown,
-  on: { start(): void; move(dy: number): void; end(): void },
-): () => void {
-  if (Platform.OS !== "web" || !handle) return () => {};
-  const element = handle as DomElement;
-  let startY: number | null = null;
-  const move: DomListener = (event) => {
-    if (startY !== null) on.move(event.clientY - startY);
-  };
-  const stop = () => {
-    document.removeEventListener("mousemove", move);
-    document.removeEventListener("mouseup", up);
-  };
-  const up: DomListener = () => {
-    if (startY === null) return;
-    startY = null;
-    stop();
-    on.end();
-  };
-  const down: DomListener = (event) => {
-    // Keep the drag from selecting text.
-    event.preventDefault();
-    startY = event.clientY;
-    on.start();
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-  };
-  element.addEventListener("mousedown", down);
-  return () => {
-    element.removeEventListener("mousedown", down);
-    stop();
-  };
-}
-
 /**
  * Calls `handler` on every click inside `node` before the clicked element handles it, so a
  * link's own navigation still runs afterwards. Returns the cleanup.
