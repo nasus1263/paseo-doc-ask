@@ -250,14 +250,8 @@ export function decoratePreview(
   };
 
   /** The footnote under the point: a linked highlight with its reference, or a superscript. */
-  const footnoteAt = (x: number, y: number): { number: number; rect: DomRect } | null => {
-    for (const mark of painted) {
-      if (mark.number === null) continue;
-      const rects = mark.hoverRange.getClientRects();
-      for (let i = 0; i < rects.length; i++) {
-        if (within(rects[i], x, y)) return { number: mark.number, rect: rects[i] };
-      }
-    }
+  /** The superscript number under the point, exactly; several numbers can follow one passage. */
+  const superscriptAt = (x: number, y: number): { number: number; rect: DomRect } | null => {
     const caret = document.caretRangeFromPoint?.(x, y);
     const node = caret?.startContainer as DomText | undefined;
     if (!caret || !node || node.nodeType !== TEXT_NODE || !root.contains(node)) return null;
@@ -273,6 +267,19 @@ export function decoratePreview(
     run.setEnd(node, end);
     const rect = run.getBoundingClientRect();
     return within(rect, x, y) ? { number: fromSuperscript(text.slice(start, end)), rect } : null;
+  };
+  /** The footnote under the point: a superscript first, else a linked highlight. */
+  const footnoteAt = (x: number, y: number): { number: number; rect: DomRect } | null => {
+    const exact = superscriptAt(x, y);
+    if (exact) return exact;
+    for (const mark of painted) {
+      if (mark.number === null) continue;
+      const rects = mark.hoverRange.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        if (within(rects[i], x, y)) return { number: mark.number, rect: rects[i] };
+      }
+    }
+    return null;
   };
 
   const move: DomListener = (event) => {

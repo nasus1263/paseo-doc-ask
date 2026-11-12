@@ -195,6 +195,26 @@ class ChatController {
     });
   }
 
+  /**
+   * Adds the reader's own comment on a selection in a message. Nothing is sent to the AI, and
+   * footnotes on the same passage are kept. Returns an error message, or null when saved.
+   */
+  async addComment(selection: MessageSelection, comment: string): Promise<string | null> {
+    const range = locateRendered(selection.source, selection.selected, selection.hint);
+    if (!range) return "선택한 부분을 메시지에서 찾지 못했습니다.";
+    try {
+      return await this.update(
+        (latest) =>
+          annotateChat(latest, selection.source, selection.key, range, "주석", selection.selected, comment, {
+            comment: true,
+          }).comments,
+        "",
+      );
+    } catch (cause) {
+      return `저장 실패: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+
   /** A follow-up on a footnote shown in the side panel; the answer joins that footnote. */
   async askNote(labelOfNote: string, selected: string, mode: AskMode, question?: string): Promise<void> {
     const label = MODE_LABEL[mode];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, anchorRange, annotateChat, chatMarks, chatNotes, messageKey } from "../shared/chat.ts";
+import { anchorAt, anchorRange, annotateChat, chatMarks, chatNotes, copyComments, messageKey } from "../shared/chat.ts";
 import { setNoteMeta } from "../shared/markdown.ts";
 
 test("messageKey prefers the id and hashes text otherwise", () => {
@@ -52,4 +52,38 @@ test("bookmark and memo keep the anchor", () => {
     bookmark: true,
     anchor: { message: "m", quote: "hello", occurrence: 0 },
   });
+});
+
+test("a comment keeps overlapping notes and both stay reachable", () => {
+  const text = "멱등성은 중요하다.";
+  const explained = annotateChat("", text, "m", { from: 0, to: 3 }, "설명", "멱등성", "AI 설명");
+  const commented = annotateChat(explained.comments, text, "m", { from: 0, to: 9 }, "주석", "멱등성은 중요하다", "동의함", {
+    comment: true,
+  });
+  assert.deepEqual(commented.replaced, []);
+  const notes = chatNotes(commented.comments);
+  assert.deepEqual(notes.map((n) => [n.label, n.meta.comment === true]), [["1", false], ["2", true]]);
+  const { body, marks } = chatMarks(text, "m", notes);
+  // The first passage is highlighted; the overlapping comment shows its superscript.
+  assert.equal(body, "⁣멱등성⁤¹은 중요하다².");
+  assert.deepEqual(marks, [{ text: "멱등성", number: 1 }]);
+});
+
+test("footnotes ending at the same place show comma-separated superscripts", () => {
+  const text = "abc";
+  let comments = annotateChat("", text, "m", { from: 0, to: 3 }, "설명", "abc", "A").comments;
+  comments = annotateChat(comments, text, "m", { from: 1, to: 3 }, "주석", "bc", "B", { comment: true }).comments;
+  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "⁣abc⁤¹,²");
+});
+
+test("copyComments quotes each commented passage in order, comments only", () => {
+  const text = "첫 문장.\n둘째 문장.";
+  let comments = annotateChat("", text, "m", { from: 6, to: 12 }, "주석", "둘째 문장.", "두 번째 의견", { comment: true }).comments;
+  comments = annotateChat(comments, text, "m", { from: 0, to: 2 }, "설명", "첫", "AI 설명").comments;
+  comments = annotateChat(comments, text, "m", { from: 0, to: 5 }, "주석", "첫 문장.", "첫 의견\n\n둘째 줄", { comment: true }).comments;
+  assert.equal(
+    copyComments(text, "m", chatNotes(comments)),
+    "> 첫 문장.\n\n첫 의견\n\n둘째 줄\n\n> 둘째 문장.\n\n두 번째 의견",
+  );
+  assert.equal(copyComments(text, "other", chatNotes(comments)), "");
 });

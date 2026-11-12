@@ -68,39 +68,85 @@ export function chatNotes(comments: string): Footnote[] {
     .sort((a, b) => a.number - b.number);
 }
 
-/**
- * Prepares one message for display: wraps each passage with a footnote in the highlight
- * sentinels and follows it with the footnote's superscript number. Overlapping passages keep
- * the earlier one.
- */
-export function chatMarks(text: string, key: string, notes: Footnote[]): { body: string; marks: Mark[] } {
-  const placed = notes
+/** The footnotes on message `key` that still find their passage, in passage order. */
+function placedNotes(text: string, key: string, notes: Footnote[]): { note: Footnote; range: TextRange }[] {
+  return notes
     .filter((note) => note.meta.anchor?.message === key)
     .map((note) => ({ note, range: anchorRange(text, note.meta.anchor as NoteAnchor) }))
     .filter((entry): entry is { note: Footnote; range: TextRange } => entry.range !== null)
-    .sort((a, b) => a.range.from - b.range.from);
-  const kept: typeof placed = [];
-  for (const entry of placed) {
-    const last = kept[kept.length - 1];
-    if (!last || entry.range.from >= last.range.to) kept.push(entry);
-  }
-  let body = text;
-  for (const { note, range } of [...kept].reverse()) {
-    body =
-      body.slice(0, range.from) +
-      MARK_OPEN +
-      body.slice(range.from, range.to) +
-      MARK_CLOSE +
-      superscript(note.number) +
-      body.slice(range.to);
-  }
-  return { body, marks: kept.map(({ note }) => ({ text: note.meta.anchor?.quote ?? "", number: note.number })) };
+    .sort((a, b) => a.range.from - b.range.from || a.range.to - b.range.to || a.note.number - b.note.number);
 }
 
 /**
- * Adds a footnote on `range` of a message: removes footnotes on the same message that overlap
- * it, then appends the new definition with its anchor. Returns the new comment text, the new
- * label, and the replaced labels.
+ * Prepares one message for display: wraps each passage with a footnote in the highlight
+ * sentinels and follows it with the footnote's superscript number. Where passages overlap, the
+ * earlier one is highlighted and the others show only their superscript, so every footnote
+ * stays reachable.
+ */
+export function chatMarks(text: string, key: string, notes: Footnote[]): { body: string; marks: Mark[] } {
+  const placed = placedNotes(text, key, notes);
+  const highlighted = new Set<Footnote>();
+  let end = -1;
+  for (const { note, range } of placed) {
+    if (range.from >= end) {
+      highlighted.add(note);
+      end = range.to;
+    }
+  }
+  // Insertions by offset: opening sentinels, then closing sentinels with the superscripts of
+  // every footnote ending there, comma-separated so adjacent numbers stay distinct.
+  const opens = new Map<number, number>();
+  const ends = new Map<number, { close: boolean; numbers: number[] }>();
+  for (const { note, range } of placed) {
+    const at = ends.get(range.to) ?? { close: false, numbers: [] };
+    at.numbers.push(note.number);
+    if (highlighted.has(note)) {
+      at.close = true;
+      opens.set(range.from, (opens.get(range.from) ?? 0) + 1);
+    }
+    ends.set(range.to, at);
+  }
+  const offsets = [...new Set([...opens.keys(), ...ends.keys()])].sort((a, b) => b - a);
+  let body = text;
+  for (const offset of offsets) {
+    const at = ends.get(offset);
+    const closing = at ? (at.close ? MARK_CLOSE : "") + at.numbers.map(superscript).join(",") : "";
+    const opening = MARK_OPEN.repeat(opens.get(offset) ?? 0);
+    body = body.slice(0, offset) + closing + opening + body.slice(offset);
+  }
+  return {
+    body,
+    marks: placed
+      .filter(({ note }) => highlighted.has(note))
+      .map(({ note }) => ({ text: note.meta.anchor?.quote ?? "", number: note.number })),
+  };
+}
+
+/**
+ * The reader's own comments on message `key`, in passage order, as Markdown ready to paste:
+ * each passage quoted, followed by the comment.
+ */
+export function copyComments(text: string, key: string, notes: Footnote[]): string {
+  return placedNotes(text, key, notes)
+    .filter(({ note }) => note.meta.comment)
+    .map(({ note, range }) => {
+      const quote = text
+        .slice(range.from, range.to)
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      // The definition starts with its bold "주석: …" title; the comment follows it.
+      const comment = note.content.replace(/^\*\*[^\n]*\*\*\s*/, "").trim();
+      return `${quote}\n\n${comment}`;
+    })
+    .join("\n\n");
+}
+
+/**
+ * Adds a footnote on `range` of a message and appends its definition with its anchor. An AI
+ * answer replaces footnotes on the same message that overlap it; a reader's comment
+ * (`comment: true`) keeps them. Returns the new comment text, the new label, and the replaced
+ * labels.
  */
 export function annotateChat(
   comments: string,
@@ -110,21 +156,24 @@ export function annotateChat(
   heading: string,
   subject: string,
   answer: string,
+  options: { comment?: boolean } = {},
 ): { comments: string; id: string; replaced: string[] } {
   const replaced: string[] = [];
-  for (const note of chatNotes(comments)) {
-    if (note.meta.anchor?.message !== key) continue;
-    const other = anchorRange(text, note.meta.anchor);
-    if (!other || other.from >= range.to || other.to <= range.from) continue;
-    comments = removeFootnote("", comments, note.label).comments;
-    replaced.push(note.label);
+  if (!options.comment) {
+    for (const note of chatNotes(comments)) {
+      if (note.meta.anchor?.message !== key) continue;
+      const other = anchorRange(text, note.meta.anchor);
+      if (!other || other.from >= range.to || other.to <= range.from) continue;
+      comments = removeFootnote("", comments, note.label).comments;
+      replaced.push(note.label);
+    }
   }
   const id = nextFootnoteLabel(comments);
   const existing = comments.replace(/\s+$/, "");
   const definition = buildFootnote(id, heading, subject, answer);
   const appended = existing === "" ? `${definition}\n` : `${existing}\n\n${definition}\n`;
-  const withAnchor = setNoteMeta(appended, id, { anchor: anchorAt(key, text, range) }) ?? appended;
-  return { comments: withAnchor, id, replaced };
+  const meta = { anchor: anchorAt(key, text, range), ...(options.comment ? { comment: true } : {}) };
+  return { comments: setNoteMeta(appended, id, meta) ?? appended, id, replaced };
 }
 
 /** Whether completed assistant messages are drawn by the plugin so they can carry footnotes. */

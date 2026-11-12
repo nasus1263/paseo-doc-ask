@@ -494,6 +494,8 @@ export interface NoteMeta {
   memo?: string;
   /** For a footnote on an agent message: which message, and which occurrence of which passage. */
   anchor?: NoteAnchor;
+  /** The reader's own comment on the passage, as opposed to an AI explanation or answer. */
+  comment?: boolean;
 }
 
 export interface NoteAnchor {
@@ -530,6 +532,7 @@ function splitMeta(firstLine: string): { rest: string; meta: NoteMeta } {
     if (typeof parsed.memo === "string" && parsed.memo.trim() !== "") meta.memo = parsed.memo;
     const anchor = parseAnchor(parsed.anchor);
     if (anchor) meta.anchor = anchor;
+    if (parsed.comment === true) meta.comment = true;
   } catch {
     // Unreadable metadata is ignored, not shown.
   }
@@ -541,7 +544,8 @@ function encodeMeta(meta: NoteMeta): string {
   if (meta.bookmark) clean.bookmark = true;
   if (meta.memo?.trim()) clean.memo = meta.memo.trim();
   if (meta.anchor) clean.anchor = meta.anchor;
-  if (!clean.bookmark && !clean.memo && !clean.anchor) return "";
+  if (meta.comment) clean.comment = true;
+  if (!clean.bookmark && !clean.memo && !clean.anchor && !clean.comment) return "";
   // Escape characters that could end the HTML comment early.
   const json = JSON.stringify(clean).replace(/>/g, "\\u003e").replace(/-/g, "\\u002d");
   return ` <!-- doc-ask ${json} -->`;
