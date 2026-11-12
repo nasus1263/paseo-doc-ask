@@ -16,10 +16,6 @@ import {
   watchSelection,
 } from "./web";
 
-/** Answers taller than this fold to `FOLDED_HEIGHT` with a 더 보기 toggle. */
-const FOLD_AT = 900;
-const FOLDED_HEIGHT = 600;
-
 function formatTime(date: Date): string {
   const sameDay = date.toDateString() === new Date().toDateString();
   const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
@@ -42,10 +38,6 @@ export function ChatMessage({
 }: PluginTimelineItemProps<z.output<typeof chatMessageSchema>>) {
   const { text, key } = item.data;
   const toast = useToast();
-  // Long answers fold like Paseo's own rows; the full height is measured before folding.
-  const [fullHeight, setFullHeight] = useState(0);
-  const [expanded, setExpanded] = useState(false);
-  const folds = fullHeight > FOLD_AT;
   const { controller, notes } = useChatController(agentId);
   const { body, marks } = useMemo(() => chatMarks(text, key, notes), [key, notes, text]);
   const content = useRef<View>(null);
@@ -70,12 +62,7 @@ export function ChatMessage({
     decorations.current?.setMarks(marks);
   }, [marks]);
   useEffect(
-    () =>
-      controller.registerRevealer(key, (number) => {
-        // A folded answer may hide the passage; unfold, then scroll once the layout settles.
-        setExpanded(true);
-        setTimeout(() => void decorations.current?.reveal(number), 60);
-      }),
+    () => controller.registerRevealer(key, (number) => void decorations.current?.reveal(number)),
     [controller, key],
   );
   useEffect(() => watchSelection(content.current, setSelection), []);
@@ -91,10 +78,8 @@ export function ChatMessage({
         backgroundColor: theme.colors.accent,
       },
       label: { color: theme.colors.accentForeground },
-      folded: { maxHeight: FOLDED_HEIGHT, overflow: "hidden" as const },
       footer: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12, marginTop: 4 },
       meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      link: { color: theme.colors.accent, fontSize: 12 },
     }),
     [theme],
   );
@@ -110,17 +95,8 @@ export function ChatMessage({
 
   return (
     <View ref={content}>
-      <View style={folds && !expanded ? styles.folded : null}>
-        <View onLayout={(event) => setFullHeight(event.nativeEvent.layout.height)}>
-          <Markdown>{body}</Markdown>
-        </View>
-      </View>
+      <Markdown>{body}</Markdown>
       <View style={styles.footer}>
-        {folds ? (
-          <Pressable accessibilityRole="button" onPress={() => setExpanded(!expanded)}>
-            <Text style={styles.link}>{expanded ? "접기" : "더 보기"}</Text>
-          </Pressable>
-        ) : null}
         <Pressable accessibilityRole="button" accessibilityLabel="답변 복사" onPress={copyMessage}>
           <Text style={styles.meta}>복사</Text>
         </Pressable>
