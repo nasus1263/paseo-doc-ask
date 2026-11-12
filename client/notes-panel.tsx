@@ -33,13 +33,15 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
     return (
       <View style={styles.screen}>
         <View style={styles.content}>
-          <Text style={styles.muted}>문서 질문 패널로 연 문서가 없습니다.</Text>
+          <Text style={styles.muted}>
+            문서 질문 패널로 연 문서나, AI 답변에 각주를 단 대화가 여기에 표시됩니다.
+          </Text>
         </View>
       </View>
     );
   }
 
-  const { message, actions } = notes;
+  const { message, actions, Dialogs } = notes;
   const openNote = message?.note === undefined ? undefined : notes.notes.find((n) => n.label === message.note);
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -88,6 +90,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
           ))
         )}
       </View>
+      {Dialogs ? <Dialogs theme={theme} /> : null}
     </ScrollView>
   );
 }

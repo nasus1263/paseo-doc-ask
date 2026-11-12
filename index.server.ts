@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { listWorkspaceBookmarks } from "./server/bookmarks";
+import { readChatNotes, writeChatNotes } from "./server/chat-notes";
 import { readComments, writeComments } from "./server/comments";
 import { commitFootnotes } from "./server/commit";
 import { createExplain, resetContext } from "./server/explainer";
@@ -14,6 +15,7 @@ import {
   resetRpc,
 } from "./shared/explain";
 import { resolveLinksRpc } from "./shared/links";
+import { chatNotesReadRpc, chatNotesWriteRpc } from "./shared/chat";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(promptSettings);
@@ -28,5 +30,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(commentsWriteRpc, writeComments);
   server.handle(bookmarksRpc, listWorkspaceBookmarks);
   server.handle(resolveLinksRpc, resolveLinks);
+  server.handle(chatNotesReadRpc, readChatNotes);
+  server.handle(chatNotesWriteRpc, writeChatNotes);
   return () => {};
 }

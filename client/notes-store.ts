@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from "react";
+import type { PluginFilePanelProps } from "@getpaseo/plugin/client";
+import { type ComponentType, useSyncExternalStore } from "react";
 import type { AskMode } from "../shared/explain";
 import type { Footnote } from "../shared/markdown";
 
@@ -43,6 +44,11 @@ export interface NotesSnapshot {
   notes: Footnote[];
   message: Message | null;
   actions: NotesActions;
+  /**
+   * Dialogs the panel renders for this source, for sources with no mounted component of their
+   * own to host them, such as an agent conversation.
+   */
+  Dialogs?: ComponentType<{ theme: PluginFilePanelProps["theme"] }>;
 }
 
 let current: NotesSnapshot | null = null;

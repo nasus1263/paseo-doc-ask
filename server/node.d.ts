@@ -9,6 +9,7 @@ declare module "node:fs/promises" {
   export function writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
   export function readdir(path: string, options: { withFileTypes: true }): Promise<DirEntry[]>;
   export function stat(path: string): Promise<{ isFile(): boolean }>;
+  export function mkdir(path: string, options: { recursive: true }): Promise<string | undefined>;
 }
 
 declare module "node:path" {
@@ -16,3 +17,9 @@ declare module "node:path" {
   export function join(...paths: string[]): string;
   export function resolve(...paths: string[]): string;
 }
+
+declare module "node:os" {
+  export function homedir(): string;
+}
+
+declare const process: { env: Record<string, string | undefined> };

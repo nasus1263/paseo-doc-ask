@@ -68,7 +68,7 @@ import {
 } from "./notes-store";
 import { useLinkedMarkdown } from "./links";
 
-type Theme = PluginFilePanelProps["theme"];
+export type Theme = PluginFilePanelProps["theme"];
 
 /**
  * What the user selected, and how to find it again in the newest file text. A `note` selection
@@ -670,7 +670,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
         />
       ) : null}
       <QuestionModal
-        anchor={questionAnchor}
+        selected={questionAnchor?.text ?? null}
         theme={theme}
         onClose={() => setQuestionAnchor(null)}
         onSubmit={(question) => {
@@ -1080,30 +1080,31 @@ function SourceView({ text, theme, onAction, search, onSearchCount }: SourceProp
   return <View ref={parent} style={{ flex: 1, minHeight: 0 }} />;
 }
 
-function QuestionModal({
-  anchor,
+export function QuestionModal({
+  selected,
   theme,
   onClose,
   onSubmit,
 }: {
-  anchor: Anchor | null;
+  /** The selected passage; null while closed. */
+  selected: string | null;
   theme: Theme;
   onClose: () => void;
   onSubmit: (question: string) => void;
 }) {
   const [question, setQuestion] = useState("");
   useEffect(() => {
-    if (anchor) setQuestion("");
-  }, [anchor]);
+    if (selected !== null) setQuestion("");
+  }, [selected]);
   const styles = useMemo(() => modalStyles(theme), [theme]);
   const submit = () => {
     if (question.trim()) onSubmit(question.trim());
   };
   return (
-    <Modal title="질문" open={anchor !== null} onOpenChange={(open) => !open && onClose()}>
+    <Modal title="질문" open={selected !== null} onOpenChange={(open) => !open && onClose()}>
       <Modal.Content>
         <Text style={styles.muted} numberOfLines={3}>
-          선택: {anchor?.text}
+          선택: {selected}
         </Text>
         <TextInput
           autoFocus
@@ -1185,7 +1186,7 @@ function PromptModal({ open, theme, onClose }: { open: boolean; theme: Theme; on
 }
 
 /** Confirms removing a footnote; `note` is null while closed. */
-function DeleteNoteModal({
+export function DeleteNoteModal({
   note,
   theme,
   onClose,
@@ -1239,7 +1240,7 @@ function DeleteNoteModal({
 }
 
 /** Edits one footnote's memo; `memo` is null while closed. */
-function MemoModal({
+export function MemoModal({
   memo,
   theme,
   onClose,

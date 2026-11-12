@@ -492,6 +492,21 @@ function extractDefinitions(text: string, definitions: Map<string, Definition>):
 export interface NoteMeta {
   bookmark?: boolean;
   memo?: string;
+  /** For a footnote on an agent message: which message, and which occurrence of which passage. */
+  anchor?: NoteAnchor;
+}
+
+export interface NoteAnchor {
+  message: string;
+  quote: string;
+  occurrence: number;
+}
+
+function parseAnchor(value: unknown): NoteAnchor | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { message, quote, occurrence } = value as Record<string, unknown>;
+  if (typeof message !== "string" || typeof quote !== "string" || quote === "") return undefined;
+  return { message, quote, occurrence: typeof occurrence === "number" && occurrence >= 0 ? occurrence : 0 };
 }
 
 interface Definition {
@@ -511,10 +526,10 @@ function splitMeta(firstLine: string): { rest: string; meta: NoteMeta } {
   let meta: NoteMeta = {};
   try {
     const parsed = JSON.parse(match[1]) as Record<string, unknown>;
-    meta = {
-      bookmark: parsed.bookmark === true ? true : undefined,
-      memo: typeof parsed.memo === "string" && parsed.memo.trim() !== "" ? parsed.memo : undefined,
-    };
+    if (parsed.bookmark === true) meta.bookmark = true;
+    if (typeof parsed.memo === "string" && parsed.memo.trim() !== "") meta.memo = parsed.memo;
+    const anchor = parseAnchor(parsed.anchor);
+    if (anchor) meta.anchor = anchor;
   } catch {
     // Unreadable metadata is ignored, not shown.
   }
@@ -525,7 +540,8 @@ function encodeMeta(meta: NoteMeta): string {
   const clean: NoteMeta = {};
   if (meta.bookmark) clean.bookmark = true;
   if (meta.memo?.trim()) clean.memo = meta.memo.trim();
-  if (!clean.bookmark && !clean.memo) return "";
+  if (meta.anchor) clean.anchor = meta.anchor;
+  if (!clean.bookmark && !clean.memo && !clean.anchor) return "";
   // Escape characters that could end the HTML comment early.
   const json = JSON.stringify(clean).replace(/>/g, "\\u003e").replace(/-/g, "\\u002d");
   return ` <!-- doc-ask ${json} -->`;
