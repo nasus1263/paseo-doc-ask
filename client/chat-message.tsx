@@ -8,7 +8,7 @@ import { keptLength } from "../shared/markdown";
 import { type MessageSelection, useChatController } from "./chat-controller";
 import { QuestionModal } from "./doc-ask-panel";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
-import { decoratePreview, type PreviewDecorations } from "./web";
+import { decoratePreview, elementSize, type PreviewDecorations } from "./web";
 
 function formatTime(date: Date): string {
   const sameDay = date.toDateString() === new Date().toDateString();
@@ -39,7 +39,6 @@ export function ChatMessage({
   const comments = useMemo(() => copyComments(text, key, notes), [key, notes, text]);
   const content = useRef<View>(null);
   const decorations = useRef<PreviewDecorations | null>(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
   const [question, setQuestion] = useState<MessageSelection | null>(null);
   const { draft, close, focused } = useSelectionDraft(content);
 
@@ -83,9 +82,11 @@ export function ChatMessage({
 
   const picked = (): MessageSelection | null =>
     draft ? { key, source: text, selected: draft.text, hint: keptLength(draft.prefix) } : null;
+  // Measured only while the selection box is open, not on every row's layout.
+  const size = draft ? elementSize(content.current) : null;
 
   return (
-    <View ref={content} onLayout={(event) => setSize(event.nativeEvent.layout)}>
+    <View ref={content}>
       <Markdown>{body}</Markdown>
       <View style={styles.footer}>
         <Pressable
@@ -111,8 +112,8 @@ export function ChatMessage({
           draft={draft}
           focused={focused}
           theme={theme}
-          containerWidth={size.width}
-          containerHeight={size.height}
+          containerWidth={size?.width ?? 0}
+          containerHeight={size?.height ?? 0}
           onClose={close}
           onComment={async (comment) => {
             const selection = picked();
@@ -133,15 +134,18 @@ export function ChatMessage({
           }}
         />
       ) : null}
-      <QuestionModal
-        selected={question?.selected ?? null}
-        theme={theme}
-        onClose={() => setQuestion(null)}
-        onSubmit={(asked) => {
-          if (question) void controller.askMessage(question, "question", asked);
-          setQuestion(null);
-        }}
-      />
+      {/* Mounted only while open: a closed dialog per message adds up over a long chat. */}
+      {question ? (
+        <QuestionModal
+          selected={question.selected}
+          theme={theme}
+          onClose={() => setQuestion(null)}
+          onSubmit={(asked) => {
+            void controller.askMessage(question, "question", asked);
+            setQuestion(null);
+          }}
+        />
+      ) : null}
     </View>
   );
 }

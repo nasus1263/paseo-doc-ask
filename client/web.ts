@@ -141,7 +141,44 @@ export interface PreviewDecorations {
 const FLASH_COLOR = "rgba(255, 170, 0, 0.75)";
 const FLASH_MS = 1400;
 
-let decorationCount = 0;
+/** A CSS highlight is set-like: decorations add and remove their own ranges. */
+interface SharedHighlight {
+  add(range: DomRange): unknown;
+  delete(range: DomRange): boolean;
+  priority: number;
+}
+
+const SHARED_HIGHLIGHTS = { "doc-ask-mark": MARK_COLOR, "doc-ask-flash": FLASH_COLOR } as const;
+type SharedHighlightName = keyof typeof SHARED_HIGHLIGHTS;
+const sharedHighlights = new Map<SharedHighlightName, SharedHighlight>();
+let sharedHighlightStyle = false;
+
+/**
+ * One highlight per kind for every decorated view, so the page gets a single style element
+ * however many messages or documents are on screen. Null without the Custom Highlight API.
+ */
+function sharedHighlight(name: SharedHighlightName): SharedHighlight | null {
+  const globals = globalThis as HighlightGlobals;
+  const registry = globals.CSS?.highlights;
+  if (!registry || !globals.Highlight) return null;
+  if (!sharedHighlightStyle) {
+    const style = document.createElement("style");
+    style.textContent = Object.entries(SHARED_HIGHLIGHTS)
+      .map(([kind, color]) => `::highlight(${kind}) { background-color: ${color}; }`)
+      .join(" ");
+    document.head.appendChild(style);
+    sharedHighlightStyle = true;
+  }
+  let highlight = sharedHighlights.get(name);
+  if (!highlight) {
+    highlight = new globals.Highlight() as unknown as SharedHighlight;
+    // A flash paints over the plain highlight.
+    if (name === "doc-ask-flash") highlight.priority = 1;
+    registry.set(name, highlight);
+    sharedHighlights.set(name, highlight);
+  }
+  return highlight;
+}
 
 /**
  * Decorates rendered Markdown inside `container` without touching its DOM: paints highlights
@@ -159,39 +196,41 @@ export function decoratePreview(
   if (Platform.OS !== "web" || !container || !overlay) return none;
   const root = container as DomElement;
   const overlayElement = overlay as DomElement;
-  const globals = globalThis as HighlightGlobals;
-  const registry = globals.CSS?.highlights;
-  const name = `doc-ask-mark-${++decorationCount}`;
-  const style = document.createElement("style");
-  style.textContent = `::highlight(${name}) { background-color: ${MARK_COLOR}; }`;
-  document.head.appendChild(style);
 
   let marks: readonly Mark[] = [];
   let painted: LocatedMark[] = [];
   let frame = 0;
 
+  const unpaint = () => {
+    const highlight = painted.length > 0 ? sharedHighlight("doc-ask-mark") : null;
+    for (const mark of painted) highlight?.delete(mark.range);
+    painted = [];
+  };
   // Reveals wait for the next paint so they see the newest DOM.
   let afterPaint: (() => void)[] = [];
   const paint = () => {
     frame = 0;
+    unpaint();
     painted = locateMarks(root, marks);
-    if (registry && globals.Highlight) {
-      if (painted.length === 0) registry.delete(name);
-      else registry.set(name, new globals.Highlight(...painted.map((mark) => mark.range)));
-    }
+    const highlight = painted.length > 0 ? sharedHighlight("doc-ask-mark") : null;
+    for (const mark of painted) highlight?.add(mark.range);
     const waiting = afterPaint;
     afterPaint = [];
     for (const run of waiting) run();
   };
 
-  const flashName = `${name}-flash`;
-  style.textContent += ` ::highlight(${flashName}) { background-color: ${FLASH_COLOR}; }`;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  let flashed: DomRange | null = null;
+  const unflash = () => {
+    if (flashed) sharedHighlight("doc-ask-flash")?.delete(flashed);
+    flashed = null;
+  };
   const flash = (range: DomRange) => {
-    if (!registry || !globals.Highlight) return;
-    registry.set(flashName, new globals.Highlight(range));
+    unflash();
+    sharedHighlight("doc-ask-flash")?.add(range);
+    flashed = range;
     if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => registry.delete(flashName), FLASH_MS);
+    flashTimer = setTimeout(unflash, FLASH_MS);
   };
   /** The footnote's highlight, or else its first superscript reference. */
   const rangeOf = (number: number): DomRange | null => {
@@ -223,9 +262,18 @@ export function decoratePreview(
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(paint);
   };
-  // The renderer may update the DOM after React commits; repaint whenever it changes.
-  const observer = new MutationObserver(schedule);
-  observer.observe(root, { childList: true, subtree: true, characterData: true });
+  // The renderer may update the DOM after React commits; repaint whenever it changes. Watched
+  // only while there is something to paint: most views have no highlights.
+  let observer: MutationObserver | null = null;
+  const observe = (needed: boolean) => {
+    if (needed && !observer) {
+      observer = new MutationObserver(schedule);
+      observer.observe(root, { childList: true, subtree: true, characterData: true });
+    } else if (!needed && observer) {
+      observer.disconnect();
+      observer = null;
+    }
+  };
 
   // Keyed by footnote only: moving between a highlight, its other lines and its superscript keeps
   // the tooltip where it first opened.
@@ -303,7 +351,10 @@ export function decoratePreview(
 
   return {
     setMarks(next) {
+      // Nothing painted and nothing to paint: skip the work entirely.
+      if (next.length === 0 && marks.length === 0 && painted.length === 0) return;
       marks = next;
+      observe(next.length > 0);
       schedule();
     },
     reveal(number) {
@@ -311,17 +362,16 @@ export function decoratePreview(
       return new Promise((resolve) => afterPaint.push(() => resolve(revealNow(number))));
     },
     dispose() {
-      observer.disconnect();
+      observe(false);
       if (frame) cancelAnimationFrame(frame);
       root.removeEventListener("mousemove", move);
       root.removeEventListener("mouseleave", leave);
       root.removeEventListener("click", click);
-      registry?.delete(name);
-      registry?.delete(flashName);
+      unpaint();
+      unflash();
       if (flashTimer) clearTimeout(flashTimer);
       for (const run of afterPaint) run();
       afterPaint = [];
-      style.remove();
     },
   };
 }
@@ -611,6 +661,85 @@ export function holdHighlight(range: unknown): () => void {
 /** Approximate width of the floating action buttons, to keep them inside the container. */
 const ACTIONS_WIDTH = 120;
 
+interface SelectionWatcher {
+  root: DomElement;
+  onChange: (selection: RenderedSelection | null) => void;
+  /**
+   * The selection last reported; an unchanged selection keeps its button position, so pressing
+   * a button (which also fires mouseup) never moves the buttons out from under the pointer.
+   */
+  lastKey: string | null;
+}
+
+/** Every container watched for selections. One set of document listeners serves them all. */
+const selectionWatchers = new Set<SelectionWatcher>();
+
+function currentSelectionRange(): DomRange | null {
+  const selection = document.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  return selection.getRangeAt(0);
+}
+
+function selectionOwner(range: DomRange | null): SelectionWatcher | undefined {
+  if (!range) return undefined;
+  for (const watcher of selectionWatchers) {
+    if (watcher.root.contains(range.commonAncestorContainer)) return watcher;
+  }
+  return undefined;
+}
+
+function reportSelection(watcher: SelectionWatcher, selection: RenderedSelection | null): void {
+  watcher.lastKey = selection ? `${selection.prefix.length}:${selection.text}` : null;
+  watcher.onChange(selection);
+}
+
+/** After the mouse or a key is released: report to the container holding the selection. */
+const settleSelection: DomListener = (event) => {
+  const range = currentSelectionRange();
+  const owner = selectionOwner(range);
+  for (const watcher of selectionWatchers) if (watcher !== owner) reportSelection(watcher, null);
+  if (!owner || !range) return;
+  const root = owner.root;
+  // Drop the invisible highlight sentinels the preview adds.
+  const text = range.toString().split(MARK_OPEN).join("").split(MARK_CLOSE).join("");
+  if (text.trim() === "") return reportSelection(owner, null);
+  const before = document.createRange();
+  before.selectNodeContents(root);
+  before.setEnd(range.startContainer, range.startOffset);
+  const prefix = before.toString();
+  if (`${prefix.length}:${text}` === owner.lastKey) return;
+  const box = root.getBoundingClientRect();
+  let x: number;
+  let y: number;
+  if (event.type === "mouseup") {
+    // Where the drag ended.
+    x = event.clientX;
+    y = event.clientY + 12;
+  } else {
+    // Keyboard selection: the end of the selected text.
+    const rects = range.getClientRects();
+    const end = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+    x = end.right;
+    y = end.bottom + 6;
+  }
+  const maxLeft = Math.max(0, box.right - box.left - ACTIONS_WIDTH);
+  reportSelection(owner, {
+    text,
+    prefix,
+    top: y - box.top,
+    left: Math.min(maxLeft, Math.max(0, x - box.left - 8)),
+    range: range.cloneRange(),
+  });
+};
+
+/** While the selection changes: tell only containers with an open selection that it left. */
+const collapseSelection = () => {
+  const owner = selectionOwner(currentSelectionRange());
+  for (const watcher of selectionWatchers) {
+    if (watcher !== owner && watcher.lastKey !== null) reportSelection(watcher, null);
+  }
+};
+
 /**
  * Reports selections inside `container` after the mouse or keyboard settles, and null when the
  * selection collapses or leaves it. A mouse selection places the buttons where the drag ended.
@@ -621,63 +750,20 @@ export function watchSelection(
   onChange: (selection: RenderedSelection | null) => void,
 ): () => void {
   if (Platform.OS !== "web" || !container) return () => {};
-  const root = container as DomElement;
-  const current = (): DomRange | null => {
-    const selection = document.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
-    const range = selection.getRangeAt(0);
-    return root.contains(range.commonAncestorContainer) ? range : null;
-  };
-  // The selection last reported; an unchanged selection keeps its button position, so pressing
-  // a button (which also fires mouseup) never moves the buttons out from under the pointer.
-  let lastKey: string | null = null;
-  const report = (selection: RenderedSelection | null) => {
-    lastKey = selection ? `${selection.prefix.length}:${selection.text}` : null;
-    onChange(selection);
-  };
-  const settle: DomListener = (event) => {
-    const range = current();
-    // Drop the invisible highlight sentinels the preview adds.
-    const text = (range?.toString() ?? "").split(MARK_OPEN).join("").split(MARK_CLOSE).join("");
-    if (!range || text.trim() === "") return report(null);
-    const before = document.createRange();
-    before.selectNodeContents(root);
-    before.setEnd(range.startContainer, range.startOffset);
-    const prefix = before.toString();
-    if (`${prefix.length}:${text}` === lastKey) return;
-    const box = root.getBoundingClientRect();
-    let x: number;
-    let y: number;
-    if (event.type === "mouseup") {
-      // Where the drag ended.
-      x = event.clientX;
-      y = event.clientY + 12;
-    } else {
-      // Keyboard selection: the end of the selected text.
-      const rects = range.getClientRects();
-      const end = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
-      x = end.right;
-      y = end.bottom + 6;
-    }
-    const maxLeft = Math.max(0, box.right - box.left - ACTIONS_WIDTH);
-    report({
-      text,
-      prefix,
-      top: y - box.top,
-      left: Math.min(maxLeft, Math.max(0, x - box.left - 8)),
-      range: range.cloneRange(),
-    });
-  };
-  const collapse = () => {
-    if (!current()) report(null);
-  };
-  document.addEventListener("mouseup", settle);
-  document.addEventListener("keyup", settle);
-  document.addEventListener("selectionchange", collapse);
+  const watcher: SelectionWatcher = { root: container as DomElement, onChange, lastKey: null };
+  if (selectionWatchers.size === 0) {
+    document.addEventListener("mouseup", settleSelection);
+    document.addEventListener("keyup", settleSelection);
+    document.addEventListener("selectionchange", collapseSelection);
+  }
+  selectionWatchers.add(watcher);
   return () => {
-    document.removeEventListener("mouseup", settle);
-    document.removeEventListener("keyup", settle);
-    document.removeEventListener("selectionchange", collapse);
+    selectionWatchers.delete(watcher);
+    if (selectionWatchers.size === 0) {
+      document.removeEventListener("mouseup", settleSelection);
+      document.removeEventListener("keyup", settleSelection);
+      document.removeEventListener("selectionchange", collapseSelection);
+    }
   };
 }
 
@@ -903,4 +989,11 @@ export function onEnterKey(handler: () => void): () => void {
   };
   document.addEventListener("keydown", listener, true);
   return () => document.removeEventListener("keydown", listener, true);
+}
+
+/** The rendered size of `node`, measured on demand instead of on every layout. */
+export function elementSize(node: unknown): { width: number; height: number } {
+  if (Platform.OS !== "web" || !node) return { width: 0, height: 0 };
+  const box = (node as DomElement).getBoundingClientRect();
+  return { width: box.right - box.left, height: box.bottom - box.top };
 }

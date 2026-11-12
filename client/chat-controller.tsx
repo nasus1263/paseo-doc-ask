@@ -1,5 +1,5 @@
 import { useAgent, useRpc } from "@getpaseo/plugin/client";
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { annotateChat, chatNotes, chatNotesReadRpc, chatNotesWriteRpc } from "../shared/chat";
 import { type AskMode, explainRpc } from "../shared/explain";
 import {
@@ -101,9 +101,13 @@ class ChatController {
     };
   };
 
+  /** The agent's footnotes, parsed once per change of the file and shared by every message row. */
   notes(): Footnote[] {
-    return chatNotes(this.state.text ?? "");
+    const text = this.state.text ?? "";
+    if (this.parsed?.text !== text) this.parsed = { text, notes: chatNotes(text) };
+    return this.parsed.notes;
   }
+  private parsed: { text: string; notes: Footnote[] } | null = null;
 
   registerRevealer(key: string, reveal: (number: number) => void): () => void {
     this.revealers.set(key, reveal);
@@ -348,7 +352,8 @@ export function useChatController(agentId: string): { controller: ChatController
   useEffect(() => {
     controller.bind({ read, write, explain, workspaceId: agent?.workspaceId ?? null, title: agent?.title ?? null });
   }, [agent?.title, agent?.workspaceId, controller, explain, read, write]);
-  const { text } = useChatState(controller);
-  const notes = useMemo(() => chatNotes(text ?? ""), [text]);
+  // Rows follow the footnote file only, not the request status or dialogs, so a request in
+  // flight does not re-render every message.
+  const notes = useSyncExternalStore(controller.subscribe, () => controller.notes());
   return { controller, notes };
 }

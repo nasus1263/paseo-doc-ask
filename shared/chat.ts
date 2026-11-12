@@ -68,6 +68,8 @@ export function chatNotes(comments: string): Footnote[] {
     .sort((a, b) => a.number - b.number);
 }
 
+const NO_MARKS: Mark[] = [];
+
 /** The footnotes on message `key` that still find their passage, in passage order. */
 function placedNotes(text: string, key: string, notes: Footnote[]): { note: Footnote; range: TextRange }[] {
   return notes
@@ -84,6 +86,8 @@ function placedNotes(text: string, key: string, notes: Footnote[]): { note: Foot
  * stays reachable.
  */
 export function chatMarks(text: string, key: string, notes: Footnote[]): { body: string; marks: Mark[] } {
+  // Most messages carry no footnote: return the text as is, with one shared empty list.
+  if (!notes.some((note) => note.meta.anchor?.message === key)) return { body: text, marks: NO_MARKS };
   const placed = placedNotes(text, key, notes);
   const highlighted = new Set<Footnote>();
   let end = -1;
