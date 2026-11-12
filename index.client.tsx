@@ -1,6 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { messageKey } from "./shared/chat";
 import { CHAT_MESSAGE_KIND, ChatMessage, chatMessageSchema } from "./client/chat-message";
+import { chatAnnotationsEnabled, initChatAnnotations, setChatAnnotations } from "./client/chat-toggle";
 import { DocAskPanel } from "./client/doc-ask-panel";
 import { NOTES_PANEL_ID, setPluginClient } from "./client/host";
 import { NotesPanel } from "./client/notes-panel";
@@ -22,30 +22,24 @@ export default function contribute(client: PluginClientContext) {
       locations: ["explorer", "workspace"],
       Component: NotesPanel,
     }),
-    // Completed assistant messages are drawn by the plugin so they can carry footnotes. Streaming
-    // messages keep Paseo's own row; user messages are left alone to keep their attachments.
-    client.addTimelineTransformer({
-      id: "doc-ask-assistant",
-      query: { itemType: "assistant_message" },
-      transform: ({ item, phase }) =>
-        phase === "complete"
-          ? {
-              items: [
-                {
-                  type: "plugin",
-                  kind: CHAT_MESSAGE_KIND,
-                  version: 1,
-                  data: { text: item.text, key: messageKey(item.messageId, item.text) },
-                },
-              ],
-            }
-          : undefined,
-    }),
+    // The renderer stays registered so rows drawn while annotations were on keep rendering; the
+    // transformer that produces them follows the "대화 주석" setting.
     client.addTimelineRenderer({
       kind: CHAT_MESSAGE_KIND,
       version: 1,
       schema: chatMessageSchema,
       Component: ChatMessage,
+    }),
+    initChatAnnotations(client),
+    client.addCommandCenterItem({
+      id: "toggle-chat-notes",
+      title: "대화 주석 켜기/끄기",
+      icon: "NotebookPen",
+      keywords: ["주석", "각주", "대화", "annotate", "footnote"],
+      context: "global",
+      async onSelect() {
+        await setChatAnnotations(!chatAnnotationsEnabled());
+      },
     }),
   ];
   return () => {

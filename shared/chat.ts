@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import {
   buildFootnote,
@@ -126,3 +126,11 @@ export function annotateChat(
   const withAnchor = setNoteMeta(appended, id, { anchor: anchorAt(key, text, range) }) ?? appended;
   return { comments: withAnchor, id, replaced };
 }
+
+/** Whether completed assistant messages are drawn by the plugin so they can carry footnotes. */
+export const chatSettings = defineSettings({
+  id: "chat",
+  scope: "host",
+  version: 1,
+  schema: z.object({ annotate: z.boolean().default(false) }),
+});

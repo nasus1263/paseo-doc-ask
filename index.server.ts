@@ -15,9 +15,10 @@ import {
   resetRpc,
 } from "./shared/explain";
 import { resolveLinksRpc } from "./shared/links";
-import { chatNotesReadRpc, chatNotesWriteRpc } from "./shared/chat";
+import { chatNotesReadRpc, chatNotesWriteRpc, chatSettings } from "./shared/chat";
 
 export default function contribute(server: PluginServerContext) {
+  server.registerSettings(chatSettings);
   const settings = server.registerSettings(promptSettings);
   const readExtraPrompt = async () => {
     const state = await settings.read();
