@@ -47,6 +47,7 @@ import {
   keepSelectionOnPress,
   mountViewer,
   onClickCapture,
+  onEnterKey,
   type PreviewSearch,
   type RenderedSelection,
   searchPreview,
@@ -1247,16 +1248,25 @@ export function DeleteNoteModal({
     [theme],
   );
   const confirm = async () => {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
     setDeleting(true);
     try {
       await onConfirm();
     } finally {
+      deletingRef.current = false;
       setDeleting(false);
     }
   };
+  // Enter confirms the deletion, whichever control has focus (the close button usually does).
+  const deletingRef = useRef(false);
+  const confirmRef = useRef(confirm);
+  confirmRef.current = confirm;
+  const open = note !== null;
+  useEffect(() => (open ? onEnterKey(() => void confirmRef.current()) : undefined), [open]);
   const extras = [note?.meta.bookmark ? "북마크" : null, note?.meta.memo ? "메모" : null].filter(Boolean);
   return (
-    <Modal title="각주 삭제" open={note !== null} onOpenChange={(open) => !open && onClose()}>
+    <Modal title="각주 삭제" open={open} onOpenChange={(next) => !next && onClose()}>
       <Modal.Content>
         <Text style={styles.title} numberOfLines={2}>
           {note ? `${note.number}. ${(note.content.split("\n")[0] ?? "").replace(/\*\*/g, "")}` : ""}

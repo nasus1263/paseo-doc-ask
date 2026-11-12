@@ -24,7 +24,10 @@ interface DomEvent {
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
+  shiftKey?: boolean;
+  isComposing?: boolean;
   preventDefault(): void;
+  stopPropagation?(): void;
   stopImmediatePropagation?(): void;
 }
 type DomListener = (event: DomEvent) => void;
@@ -882,4 +885,22 @@ export function onClickCapture(node: unknown, handler: () => void): () => void {
   const listener: DomListener = () => handler();
   element.addEventListener("click", listener, true);
   return () => element.removeEventListener("click", listener, true);
+}
+
+/**
+ * Takes Enter for a dialog: calls `handler` before any focused control sees the key, so Enter
+ * confirms instead of pressing whatever button holds focus. Returns the cleanup.
+ */
+export function onEnterKey(handler: () => void): () => void {
+  if (Platform.OS !== "web") return () => {};
+  const listener: DomListener = (event) => {
+    if (event.key !== "Enter" || event.isComposing || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation?.();
+    handler();
+  };
+  document.addEventListener("keydown", listener, true);
+  return () => document.removeEventListener("keydown", listener, true);
 }
