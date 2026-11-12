@@ -1,23 +1,25 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { copyText, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import { copyText, Markdown, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
 import { chatMarks, copyComments } from "../shared/chat";
 import { keptLength } from "../shared/markdown";
 import { type MessageSelection, useChatController } from "./chat-controller";
-import { modalStyles, QuestionModal, type Theme } from "./doc-ask-panel";
+import { QuestionModal } from "./doc-ask-panel";
 import {
   ASK_ACTIONS,
   decoratePreview,
+  holdHighlight,
   keepSelectionOnPress,
   type PreviewDecorations,
-  type RenderedSelection,
   watchSelection,
 } from "./web";
 
-/** The actions over a selection in an answer: ask the AI, or add the reader's own comment. */
-const MESSAGE_ACTIONS = [...ASK_ACTIONS, { mode: "comment", label: "주석" }] as const;
+/** Width of the comment box that opens over a selection. */
+const BAR_WIDTH = 360;
+const LINE_HEIGHT = 20;
+const MAX_INPUT_HEIGHT = 160;
 
 function formatTime(date: Date): string {
   const sameDay = date.toDateString() === new Date().toDateString();
@@ -29,10 +31,27 @@ function formatTime(date: Date): string {
 export const CHAT_MESSAGE_KIND = "doc-ask-assistant";
 export const chatMessageSchema = z.object({ text: z.string(), key: z.string() });
 
+/** A finished selection waiting for a comment, and where its box sits. */
+interface Draft {
+  id: number;
+  picked: MessageSelection;
+  top: number;
+  left: number;
+  /** The selected DOM range, kept highlighted while the comment box has focus. */
+  range: unknown;
+}
+
+/** Key events from the comment box; on web `nativeEvent` is the DOM keyboard event. */
+interface KeyEvent {
+  nativeEvent: { key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number };
+  preventDefault(): void;
+}
+
 /**
  * A completed assistant message drawn with Paseo's Markdown, plus footnotes: highlighted
- * passages with superscript numbers that open in the side panel, 설명/질문 on selections, and
- * the reader's own 주석, which 모든 주석 복사 copies as quoted passages with their comments.
+ * passages with superscript numbers that open in the side panel. Finishing a selection opens a
+ * focused comment box over it (Enter saves, Shift+Enter breaks the line, Esc cancels), next to
+ * 설명/질문 for the AI. 모든 주석 복사 copies the reader's comments with the passages quoted.
  */
 export function ChatMessage({
   agentId,
@@ -46,11 +65,15 @@ export function ChatMessage({
   const { body, marks } = useMemo(() => chatMarks(text, key, notes), [key, notes, text]);
   const comments = useMemo(() => copyComments(text, key, notes), [key, notes, text]);
   const content = useRef<View>(null);
-  const actions = useRef<View>(null);
+  const bar = useRef<View>(null);
   const decorations = useRef<PreviewDecorations | null>(null);
-  const [selection, setSelection] = useState<RenderedSelection | null>(null);
+  const [width, setWidth] = useState(0);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
   const [question, setQuestion] = useState<MessageSelection | null>(null);
-  const [commenting, setCommenting] = useState<MessageSelection | null>(null);
+  const inputFocused = useRef(false);
+  const draftCount = useRef(0);
 
   useEffect(() => {
     decorations.current = decoratePreview(
@@ -71,12 +94,93 @@ export function ChatMessage({
     () => controller.registerRevealer(key, (number) => void decorations.current?.reveal(number)),
     [controller, key],
   );
-  useEffect(() => watchSelection(content.current, setSelection), []);
-  useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
+  useEffect(
+    () =>
+      watchSelection(content.current, (selection) => {
+        // Typing or selecting inside the comment box must not replace the draft it belongs to.
+        if (inputFocused.current) return;
+        if (!selection) {
+          setDraft(null);
+          return;
+        }
+        setDraft({
+          id: ++draftCount.current,
+          picked: { key, source: text, selected: selection.text, hint: keptLength(selection.prefix) },
+          top: selection.top,
+          left: selection.left,
+          range: selection.range,
+        });
+      }),
+    [key, text],
+  );
+  useEffect(() => {
+    setComment("");
+    return draft ? holdHighlight(draft.range) : undefined;
+  }, [draft]);
+  // Pressing 설명/질문 must not blur the comment box first.
+  useEffect(() => keepSelectionOnPress(bar.current), [draft?.id]);
+
+  const close = () => {
+    inputFocused.current = false;
+    setDraft(null);
+  };
+
+  const saveComment = async () => {
+    if (!draft || !comment.trim() || saving) return;
+    setSaving(true);
+    try {
+      const failure = await controller.addComment(draft.picked, comment.trim());
+      if (failure) {
+        toast.error(failure);
+        return;
+      }
+      toast.show("주석을 달았습니다.", { variant: "success" });
+      close();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onKeyPress = (event: KeyEvent) => {
+    const { key: pressed, shiftKey, isComposing, keyCode } = event.nativeEvent;
+    // Enter while an IME is composing (Korean, Japanese, …) only finishes the character.
+    if (pressed === "Enter" && !shiftKey && !isComposing && keyCode !== 229) {
+      event.preventDefault();
+      void saveComment();
+    } else if (pressed === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  };
 
   const styles = useMemo(
     () => ({
-      actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6, zIndex: 5 },
+      bar: {
+        position: "absolute" as const,
+        zIndex: 5,
+        width: BAR_WIDTH,
+        gap: 6,
+        padding: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface1,
+        shadowColor: "#000",
+        shadowOpacity: 0.18,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 3 },
+      },
+      input: {
+        color: theme.colors.foreground,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        lineHeight: LINE_HEIGHT,
+        textAlignVertical: "top" as const,
+      },
+      row: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
       button: {
         paddingHorizontal: 10,
         paddingVertical: 4,
@@ -84,6 +188,7 @@ export function ChatMessage({
         backgroundColor: theme.colors.accent,
       },
       label: { color: theme.colors.accentForeground },
+      hint: { flex: 1, textAlign: "right" as const, color: theme.colors.foregroundMuted, fontSize: 11 },
       footer: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12, marginTop: 4 },
       meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
       link: { color: theme.colors.accent, fontSize: 12 },
@@ -100,8 +205,11 @@ export function ChatMessage({
     }
   }
 
+  const inputHeight = Math.min(MAX_INPUT_HEIGHT, comment.split("\n").length * LINE_HEIGHT + 14);
+  const barLeft = draft ? Math.max(0, Math.min(draft.left, width - BAR_WIDTH)) : 0;
+
   return (
-    <View ref={content}>
+    <View ref={content} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
       <Markdown>{body}</Markdown>
       <View style={styles.footer}>
         <Pressable
@@ -122,30 +230,45 @@ export function ChatMessage({
         ) : null}
         <Text style={styles.meta}>{formatTime(timestamp)}</Text>
       </View>
-      {selection ? (
-        <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
-          {MESSAGE_ACTIONS.map((action) => (
-            <Pressable
-              key={action.mode}
-              accessibilityRole="button"
-              accessibilityLabel={`선택한 부분 ${action.label}`}
-              style={styles.button}
-              onPress={() => {
-                const picked: MessageSelection = {
-                  key,
-                  source: text,
-                  selected: selection.text,
-                  hint: keptLength(selection.prefix),
-                };
-                if (action.mode === "comment") setCommenting(picked);
-                else if (action.mode === "question") setQuestion(picked);
-                else void controller.askMessage(picked, action.mode);
-                setSelection(null);
-              }}
-            >
-              <Text style={styles.label}>{action.label}</Text>
-            </Pressable>
-          ))}
+      {draft ? (
+        <View ref={bar} style={[styles.bar, { top: draft.top, left: barLeft }]}>
+          <TextInput
+            key={draft.id}
+            autoFocus
+            multiline
+            value={comment}
+            editable={!saving}
+            onChangeText={setComment}
+            onFocus={() => {
+              inputFocused.current = true;
+            }}
+            onBlur={() => {
+              inputFocused.current = false;
+            }}
+            onKeyPress={(event) => onKeyPress(event as unknown as KeyEvent)}
+            placeholder="주석 입력 후 Enter"
+            placeholderTextColor={theme.colors.foregroundMuted}
+            accessibilityLabel="선택한 부분에 대한 주석"
+            style={[styles.input, { height: inputHeight }]}
+          />
+          <View style={styles.row}>
+            {ASK_ACTIONS.map((action) => (
+              <Pressable
+                key={action.mode}
+                accessibilityRole="button"
+                accessibilityLabel={`선택한 부분 ${action.label}`}
+                style={styles.button}
+                onPress={() => {
+                  if (action.mode === "question") setQuestion(draft.picked);
+                  else void controller.askMessage(draft.picked, action.mode);
+                  close();
+                }}
+              >
+                <Text style={styles.label}>{action.label}</Text>
+              </Pressable>
+            ))}
+            <Text style={styles.hint}>{saving ? "저장 중…" : "Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소"}</Text>
+          </View>
         </View>
       ) : null}
       <QuestionModal
@@ -157,81 +280,6 @@ export function ChatMessage({
           setQuestion(null);
         }}
       />
-      <CommentModal
-        selected={commenting?.selected ?? null}
-        theme={theme}
-        onClose={() => setCommenting(null)}
-        onSave={async (comment) => {
-          if (!commenting) return;
-          const failure = await controller.addComment(commenting, comment);
-          if (failure) {
-            toast.error(failure);
-            return;
-          }
-          toast.show("주석을 달았습니다.", { variant: "success" });
-          setCommenting(null);
-        }}
-      />
     </View>
-  );
-}
-
-/** Writes the reader's own comment on a passage; `selected` is null while closed. */
-function CommentModal({
-  selected,
-  theme,
-  onClose,
-  onSave,
-}: {
-  selected: string | null;
-  theme: Theme;
-  onClose: () => void;
-  onSave: (comment: string) => Promise<void>;
-}) {
-  const [comment, setComment] = useState("");
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    if (selected !== null) setComment("");
-  }, [selected]);
-  const styles = useMemo(() => modalStyles(theme), [theme]);
-  const save = async () => {
-    if (!comment.trim()) return;
-    setSaving(true);
-    try {
-      await onSave(comment.trim());
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Modal title="주석" open={selected !== null} onOpenChange={(open) => !open && onClose()}>
-      <Modal.Content>
-        <Text style={styles.muted} numberOfLines={3}>
-          선택: {selected}
-        </Text>
-        <TextInput
-          autoFocus
-          multiline
-          value={comment}
-          onChangeText={setComment}
-          placeholder="이 부분에 대한 내 생각이나 입장"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          style={[styles.input, { minHeight: 100, textAlignVertical: "top" }]}
-        />
-        <View style={styles.buttons}>
-          <Pressable accessibilityRole="button" onPress={onClose}>
-            <Text style={styles.secondary}>취소</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            disabled={!comment.trim() || saving}
-            onPress={save}
-            style={styles.primary}
-          >
-            <Text style={styles.primaryLabel}>{saving ? "저장 중…" : "주석 달기"}</Text>
-          </Pressable>
-        </View>
-      </Modal.Content>
-    </Modal>
   );
 }

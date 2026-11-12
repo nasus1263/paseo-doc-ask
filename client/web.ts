@@ -66,6 +66,7 @@ interface DomRange {
   selectNodeContents(node: unknown): void;
   setStart(node: unknown, offset: number): void;
   setEnd(node: unknown, offset: number): void;
+  cloneRange(): DomRange;
 }
 interface DomSelection {
   rangeCount: number;
@@ -578,6 +579,30 @@ export interface RenderedSelection {
   /** Button position relative to the container's top-left corner. */
   top: number;
   left: number;
+  /** A copy of the selected DOM range, for `holdHighlight` once focus leaves the text. */
+  range: unknown;
+}
+
+const HELD_NAME = "doc-ask-held-selection";
+const HELD_COLOR = "rgba(80, 140, 255, 0.35)";
+let heldStyle: { remove(): void } | null = null;
+
+/**
+ * Keeps showing `range` as selected after the page selection moves elsewhere, such as into a
+ * text field. Returns the cleanup.
+ */
+export function holdHighlight(range: unknown): () => void {
+  const globals = globalThis as HighlightGlobals;
+  const registry = globals.CSS?.highlights;
+  if (Platform.OS !== "web" || !range || !registry || !globals.Highlight) return () => {};
+  if (!heldStyle) {
+    const style = document.createElement("style");
+    style.textContent = `::highlight(${HELD_NAME}) { background-color: ${HELD_COLOR}; }`;
+    document.head.appendChild(style);
+    heldStyle = style;
+  }
+  registry.set(HELD_NAME, new globals.Highlight(range as DomRange));
+  return () => registry.delete(HELD_NAME);
 }
 
 /** Approximate width of the floating action buttons, to keep them inside the container. */
@@ -637,6 +662,7 @@ export function watchSelection(
       prefix,
       top: y - box.top,
       left: Math.min(maxLeft, Math.max(0, x - box.left - 8)),
+      range: range.cloneRange(),
     });
   };
   const collapse = () => {

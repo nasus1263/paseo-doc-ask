@@ -1495,7 +1495,7 @@ function BookmarksPopover({
   );
 }
 
-export function modalStyles(theme: Theme) {
+function modalStyles(theme: Theme) {
   return {
     muted: { color: theme.colors.foregroundMuted },
     danger: { color: theme.colors.statusDanger },
