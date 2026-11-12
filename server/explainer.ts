@@ -163,6 +163,9 @@ function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraP
   const question = input.question?.trim();
   if (input.mode === "question" && question) {
     parts.push("위 선택 부분에 대한 질문에 답해 줘.", "<question>", question, "</question>");
+  } else if (question) {
+    // 설명 with text typed in the selection box: explain the way the reader asked.
+    parts.push("위 선택 부분을 다음 요청에 맞게 설명해 줘.", "<request>", question, "</request>");
   } else {
     parts.push("위 선택 부분이 이해하기 어렵다. 쉽게 설명해 줘.");
   }

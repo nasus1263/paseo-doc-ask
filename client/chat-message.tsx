@@ -1,5 +1,5 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { copyText, Markdown, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import { copyText, Markdown, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
@@ -7,19 +7,8 @@ import { chatMarks, copyComments } from "../shared/chat";
 import { keptLength } from "../shared/markdown";
 import { type MessageSelection, useChatController } from "./chat-controller";
 import { QuestionModal } from "./doc-ask-panel";
-import {
-  ASK_ACTIONS,
-  decoratePreview,
-  holdHighlight,
-  keepSelectionOnPress,
-  type PreviewDecorations,
-  watchSelection,
-} from "./web";
-
-/** Width of the comment box that opens over a selection. */
-const BAR_WIDTH = 360;
-const LINE_HEIGHT = 20;
-const MAX_INPUT_HEIGHT = 160;
+import { SelectionComposer, useSelectionDraft } from "./selection-composer";
+import { decoratePreview, type PreviewDecorations } from "./web";
 
 function formatTime(date: Date): string {
   const sameDay = date.toDateString() === new Date().toDateString();
@@ -31,27 +20,11 @@ function formatTime(date: Date): string {
 export const CHAT_MESSAGE_KIND = "doc-ask-assistant";
 export const chatMessageSchema = z.object({ text: z.string(), key: z.string() });
 
-/** A finished selection waiting for a comment, and where its box sits. */
-interface Draft {
-  id: number;
-  picked: MessageSelection;
-  top: number;
-  left: number;
-  /** The selected DOM range, kept highlighted while the comment box has focus. */
-  range: unknown;
-}
-
-/** Key events from the comment box; on web `nativeEvent` is the DOM keyboard event. */
-interface KeyEvent {
-  nativeEvent: { key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number };
-  preventDefault(): void;
-}
-
 /**
  * A completed assistant message drawn with Paseo's Markdown, plus footnotes: highlighted
- * passages with superscript numbers that open in the side panel. Finishing a selection opens a
- * focused comment box over it (Enter saves, Shift+Enter breaks the line, Esc cancels), next to
- * 설명/질문 for the AI. 모든 주석 복사 copies the reader's comments with the passages quoted.
+ * passages with superscript numbers that open in the side panel. Finishing a selection opens the
+ * selection box (comment, 설명, 질문). 모든 주석 복사 copies the reader's comments with the
+ * passages quoted.
  */
 export function ChatMessage({
   agentId,
@@ -65,15 +38,10 @@ export function ChatMessage({
   const { body, marks } = useMemo(() => chatMarks(text, key, notes), [key, notes, text]);
   const comments = useMemo(() => copyComments(text, key, notes), [key, notes, text]);
   const content = useRef<View>(null);
-  const bar = useRef<View>(null);
   const decorations = useRef<PreviewDecorations | null>(null);
-  const [width, setWidth] = useState(0);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [comment, setComment] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [size, setSize] = useState({ width: 0, height: 0 });
   const [question, setQuestion] = useState<MessageSelection | null>(null);
-  const inputFocused = useRef(false);
-  const draftCount = useRef(0);
+  const { draft, close, focused } = useSelectionDraft(content);
 
   useEffect(() => {
     decorations.current = decoratePreview(
@@ -94,101 +62,9 @@ export function ChatMessage({
     () => controller.registerRevealer(key, (number) => void decorations.current?.reveal(number)),
     [controller, key],
   );
-  useEffect(
-    () =>
-      watchSelection(content.current, (selection) => {
-        // Typing or selecting inside the comment box must not replace the draft it belongs to.
-        if (inputFocused.current) return;
-        if (!selection) {
-          setDraft(null);
-          return;
-        }
-        setDraft({
-          id: ++draftCount.current,
-          picked: { key, source: text, selected: selection.text, hint: keptLength(selection.prefix) },
-          top: selection.top,
-          left: selection.left,
-          range: selection.range,
-        });
-      }),
-    [key, text],
-  );
-  useEffect(() => {
-    setComment("");
-    return draft ? holdHighlight(draft.range) : undefined;
-  }, [draft]);
-  // Pressing 설명/질문 must not blur the comment box first.
-  useEffect(() => keepSelectionOnPress(bar.current), [draft?.id]);
-
-  const close = () => {
-    inputFocused.current = false;
-    setDraft(null);
-  };
-
-  const saveComment = async () => {
-    if (!draft || !comment.trim() || saving) return;
-    setSaving(true);
-    try {
-      const failure = await controller.addComment(draft.picked, comment.trim());
-      if (failure) {
-        toast.error(failure);
-        return;
-      }
-      toast.show("주석을 달았습니다.", { variant: "success" });
-      close();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const onKeyPress = (event: KeyEvent) => {
-    const { key: pressed, shiftKey, isComposing, keyCode } = event.nativeEvent;
-    // Enter while an IME is composing (Korean, Japanese, …) only finishes the character.
-    if (pressed === "Enter" && !shiftKey && !isComposing && keyCode !== 229) {
-      event.preventDefault();
-      void saveComment();
-    } else if (pressed === "Escape") {
-      event.preventDefault();
-      close();
-    }
-  };
 
   const styles = useMemo(
     () => ({
-      bar: {
-        position: "absolute" as const,
-        zIndex: 5,
-        width: BAR_WIDTH,
-        gap: 6,
-        padding: 8,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface1,
-        shadowColor: "#000",
-        shadowOpacity: 0.18,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 3 },
-      },
-      input: {
-        color: theme.colors.foreground,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-        lineHeight: LINE_HEIGHT,
-        textAlignVertical: "top" as const,
-      },
-      row: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-      button: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
-        backgroundColor: theme.colors.accent,
-      },
-      label: { color: theme.colors.accentForeground },
-      hint: { flex: 1, textAlign: "right" as const, color: theme.colors.foregroundMuted, fontSize: 11 },
       footer: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12, marginTop: 4 },
       meta: { color: theme.colors.foregroundMuted, fontSize: 12 },
       link: { color: theme.colors.accent, fontSize: 12 },
@@ -205,11 +81,11 @@ export function ChatMessage({
     }
   }
 
-  const inputHeight = Math.min(MAX_INPUT_HEIGHT, comment.split("\n").length * LINE_HEIGHT + 14);
-  const barLeft = draft ? Math.max(0, Math.min(draft.left, width - BAR_WIDTH)) : 0;
+  const picked = (): MessageSelection | null =>
+    draft ? { key, source: text, selected: draft.text, hint: keptLength(draft.prefix) } : null;
 
   return (
-    <View ref={content} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
+    <View ref={content} onLayout={(event) => setSize(event.nativeEvent.layout)}>
       <Markdown>{body}</Markdown>
       <View style={styles.footer}>
         <Pressable
@@ -231,45 +107,31 @@ export function ChatMessage({
         <Text style={styles.meta}>{formatTime(timestamp)}</Text>
       </View>
       {draft ? (
-        <View ref={bar} style={[styles.bar, { top: draft.top, left: barLeft }]}>
-          <TextInput
-            key={draft.id}
-            autoFocus
-            multiline
-            value={comment}
-            editable={!saving}
-            onChangeText={setComment}
-            onFocus={() => {
-              inputFocused.current = true;
-            }}
-            onBlur={() => {
-              inputFocused.current = false;
-            }}
-            onKeyPress={(event) => onKeyPress(event as unknown as KeyEvent)}
-            placeholder="주석 입력 후 Enter"
-            placeholderTextColor={theme.colors.foregroundMuted}
-            accessibilityLabel="선택한 부분에 대한 주석"
-            style={[styles.input, { height: inputHeight }]}
-          />
-          <View style={styles.row}>
-            {ASK_ACTIONS.map((action) => (
-              <Pressable
-                key={action.mode}
-                accessibilityRole="button"
-                accessibilityLabel={`선택한 부분 ${action.label}`}
-                style={styles.button}
-                onPress={() => {
-                  if (action.mode === "question") setQuestion(draft.picked);
-                  else void controller.askMessage(draft.picked, action.mode);
-                  close();
-                }}
-              >
-                <Text style={styles.label}>{action.label}</Text>
-              </Pressable>
-            ))}
-            <Text style={styles.hint}>{saving ? "저장 중…" : "Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소"}</Text>
-          </View>
-        </View>
+        <SelectionComposer
+          draft={draft}
+          focused={focused}
+          theme={theme}
+          containerWidth={size.width}
+          containerHeight={size.height}
+          onClose={close}
+          onComment={async (comment) => {
+            const selection = picked();
+            if (!selection) return false;
+            const failure = await controller.addComment(selection, comment);
+            if (failure) {
+              toast.error(failure);
+              return false;
+            }
+            toast.show("주석을 달았습니다.", { variant: "success" });
+            return true;
+          }}
+          onAsk={(mode, typed) => {
+            const selection = picked();
+            if (!selection) return;
+            if (mode === "question" && !typed) setQuestion(selection);
+            else void controller.askMessage(selection, mode, typed);
+          }}
+        />
       ) : null}
       <QuestionModal
         selected={question?.selected ?? null}

@@ -348,12 +348,20 @@ export function annotate(
   label: string,
   subject: string,
   answer: string,
+  options: { comment?: boolean } = {},
 ): { doc: string; comments: string; id: string; replaced: string[] } {
-  const cleared = removeOverlapping(doc, comments, at);
+  // A reader's comment keeps the annotations it overlaps. Highlights cannot nest, so an
+  // overlapping comment gets only its reference.
+  const cleared = options.comment
+    ? { doc, comments, at, removed: [] as string[] }
+    : removeOverlapping(doc, comments, at);
   ({ doc, comments, at } = cleared);
+  const overlaps =
+    options.comment &&
+    findAnnotations(doc).some((note) => note.span.from < at.to && note.span.to > at.from);
   const id = nextFootnoteLabel(`${doc}\n${comments}`);
   const ref = `[^${id}]`;
-  const mark = highlightRange(doc, at);
+  const mark = overlaps ? null : highlightRange(doc, at);
   if (mark) {
     doc = `${doc.slice(0, mark.from)}==${doc.slice(mark.from, mark.to)}==${doc.slice(mark.to)}`;
     at = { from: mark.from, to: mark.to + 4 };
@@ -363,7 +371,8 @@ export function annotate(
     offset === null
       ? insertBlock(doc, findBlockEnd(doc, at.to), ref)
       : doc.slice(0, offset) + ref + doc.slice(offset);
-  const definition = buildFootnote(id, label, subject, answer);
+  const plain = buildFootnote(id, label, subject, answer);
+  const definition = options.comment ? (setNoteMeta(plain, id, { comment: true }) ?? plain) : plain;
   const existing = comments.replace(/\s+$/, "");
   return {
     doc: withRef,
@@ -445,6 +454,7 @@ export interface Mark {
 
 // A highlight may contain a single `=` (as in "a = b"), never `==`.
 const INLINE_TOKEN = /==(?=\S)((?:[^=\n]|=(?!=))*?\S)==(\[\^([^\]\s]+)\])?|\[\^([^\]\s]+)\]/g;
+const INNER_REFERENCE = /\[\^([^\]\s]+)\](?!:)/g;
 // Private-use characters that stand in for inline code spans while highlights are parsed.
 const CODE_OPEN = "";
 const CODE_CLOSE = "";
@@ -625,10 +635,15 @@ export function prepareFootnotes(
           INLINE_TOKEN,
           (match, marked: string | undefined, markRef: string | undefined, markLabel: string | undefined, label: string | undefined, offset: number) => {
             if (marked !== undefined) {
+              // References inside a highlight (a comment on part of it) come first in reading
+              // order, so they are numbered before the highlight's own reference.
+              const inner = marked.replace(INNER_REFERENCE, (ref, innerLabel: string) =>
+                definitions.has(innerLabel) ? superscript(numberOf(innerLabel)) : ref,
+              );
               const linked = markLabel !== undefined && definitions.has(markLabel);
               const n = linked ? numberOf(markLabel) : null;
-              marks.push({ text: restore(marked), number: n });
-              const shown = MARK_OPEN + marked + MARK_CLOSE;
+              marks.push({ text: restore(marked.replace(INNER_REFERENCE, "")), number: n });
+              const shown = MARK_OPEN + inner + MARK_CLOSE;
               if (markRef === undefined) return shown;
               return n === null ? shown + markRef : shown + superscript(n);
             }

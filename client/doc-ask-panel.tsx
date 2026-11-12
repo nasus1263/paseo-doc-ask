@@ -55,6 +55,7 @@ import {
 } from "./web";
 import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
+import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import { openNotesPanel } from "./host";
 import {
   type Message,
@@ -164,6 +165,45 @@ function DocAskViewer(props: PluginFilePanelProps) {
     });
   }, [file, load]);
 
+  /**
+   * Writes an annotated document and its comment file. The definition goes in first, so a failed
+   * document write leaves at most an unused note. Returns a failure message, or null when saved.
+   */
+  const saveAnnotated = useCallback(
+    async (
+      latest: string,
+      latestComments: string,
+      annotated: { doc: string; comments: string },
+    ): Promise<string | null> => {
+      const nextDoc = hasCommentFile
+        ? annotated.doc
+        : `${annotated.doc.replace(/\s+$/, "")}\n\n${annotated.comments}`;
+      if (hasCommentFile) {
+        try {
+          const { status } = await writeComments({ path: file.path, text: annotated.comments, base: latestComments });
+          if (status === "conflict") return "저장 실패: 그사이 주석 파일이 변경되었습니다.";
+        } catch (cause) {
+          return `저장 실패: 주석 파일을 쓰지 못했습니다. ${messageOf(cause)}`;
+        }
+      }
+      try {
+        await file.writeText(nextDoc);
+      } catch (cause) {
+        if (hasCommentFile) {
+          // Take the definition back out; best effort, the note is harmless if it stays.
+          void writeComments({ path: file.path, text: latestComments, base: annotated.comments })
+            .then(() => loadComments())
+            .catch(() => undefined);
+        }
+        return writeFailure(cause);
+      }
+      if (hasCommentFile) setComments(annotated.comments);
+      show(nextDoc);
+      return null;
+    },
+    [file, hasCommentFile, loadComments, show, writeComments],
+  );
+
   const ask = useCallback(
     async ({ anchor, mode, question }: AskRequest) => {
       if (busy.current) {
@@ -241,40 +281,11 @@ function DocAskViewer(props: PluginFilePanelProps) {
           return;
         }
         const annotated = annotate(latest, latestComments, at, label, subject, answer);
-        const nextDoc = hasCommentFile
-          ? annotated.doc
-          : `${annotated.doc.replace(/\s+$/, "")}\n\n${annotated.comments}`;
-        // The definition goes in first, so a failed document write leaves at most an unused note.
-        if (hasCommentFile) {
-          try {
-            const { status } = await writeComments({
-              path: file.path,
-              text: annotated.comments,
-              base: latestComments,
-            });
-            if (status === "conflict") {
-              failed("저장 실패: 답을 기다리는 동안 주석 파일이 변경되었습니다.");
-              return;
-            }
-          } catch (cause) {
-            failed(`저장 실패: 주석 파일을 쓰지 못했습니다. ${messageOf(cause)}`);
-            return;
-          }
-        }
-        try {
-          await file.writeText(nextDoc);
-        } catch (cause) {
-          if (hasCommentFile) {
-            // Take the definition back out; best effort, the note is harmless if it stays.
-            void writeComments({ path: file.path, text: latestComments, base: annotated.comments })
-              .then(() => loadComments())
-              .catch(() => undefined);
-          }
-          failed(writeFailure(cause));
+        const failure = await saveAnnotated(latest, latestComments, annotated);
+        if (failure) {
+          failed(failure);
           return;
         }
-        if (hasCommentFile) setComments(annotated.comments);
-        show(nextDoc);
         const replaced = annotated.replaced.length;
         setMessage({
           kind: "saved",
@@ -287,7 +298,41 @@ function DocAskViewer(props: PluginFilePanelProps) {
         busy.current = false;
       }
     },
-    [explain, file, hasCommentFile, loadComments, show, showSidePanel, toast, workspaceId, writeComments],
+    [explain, file, hasCommentFile, loadComments, saveAnnotated, show, showSidePanel, toast, workspaceId, writeComments],
+  );
+
+  /**
+   * Saves the reader's own comment on a selection as a footnote. Nothing goes to the AI, and
+   * existing footnotes are kept. Resolves true when saved; failures show as toasts.
+   */
+  const addComment = useCallback(
+    async (anchor: Anchor, comment: string): Promise<boolean> => {
+      try {
+        const [latest, latestComments] = await Promise.all([file.readText(), loadComments()]);
+        const at =
+          anchor.view === "source"
+            ? locateSelection(latest, anchor.range, anchor.text)
+            : anchor.view === "preview"
+              ? locateRendered(latest, anchor.text, anchor.hint)
+              : null;
+        if (!at) {
+          toast.error("선택한 부분을 원문에서 찾지 못했습니다.");
+          return false;
+        }
+        const annotated = annotate(latest, latestComments, at, "주석", anchor.text, comment, { comment: true });
+        const failure = await saveAnnotated(latest, latestComments, annotated);
+        if (failure) {
+          toast.error(failure);
+          return false;
+        }
+        toast.show("주석을 달았습니다.", { variant: "success" });
+        return true;
+      } catch (cause) {
+        toast.error(`저장 실패: ${messageOf(cause)}`);
+        return false;
+      }
+    },
+    [file, loadComments, saveAnnotated, toast],
   );
 
   // The notes as currently shown, for requests that need a footnote's latest content.
@@ -418,10 +463,11 @@ function DocAskViewer(props: PluginFilePanelProps) {
     });
   }, [file, jumpTo]);
 
+  /** 설명 or 질문 on a selection; `text` typed in the selection box is the request or question. */
   const onAction = useCallback(
-    (anchor: Anchor, mode: AskMode) => {
-      if (mode === "question") setQuestionAnchor(anchor);
-      else void ask({ anchor, mode });
+    (anchor: Anchor, mode: AskMode, text?: string) => {
+      if (mode === "question" && !text) setQuestionAnchor(anchor);
+      else void ask({ anchor, mode, question: text });
     },
     [ask],
   );
@@ -647,6 +693,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
           onOpenNote={openNote}
           revealRef={revealRef}
           onAction={onAction}
+          onComment={addComment}
           search={search}
           onSearchCount={setSearchCount}
         />
@@ -736,14 +783,16 @@ interface PreviewProps {
   onOpenNote: (number: number) => void;
   /** Receives the preview's reveal function while it is mounted. */
   revealRef: MutableRefObject<((number: number) => Promise<boolean>) | null>;
-  onAction: (anchor: Anchor, mode: AskMode) => void;
+  onAction: (anchor: Anchor, mode: AskMode, text?: string) => void;
+  onComment: (anchor: Anchor, comment: string) => Promise<boolean>;
   search: SearchRequest;
   onSearchCount: (count: number) => void;
 }
 
 /**
  * Paseo's own Markdown rendering. Highlights and superscript references show their footnote on
- * hover, the notes are listed at the end, and selections get floating ask buttons.
+ * hover, the notes are listed at the end, and a finished selection opens the selection box
+ * (comment, 설명, 질문).
  */
 function PreviewView({
   body,
@@ -756,20 +805,19 @@ function PreviewView({
   onOpenNote,
   revealRef,
   onAction,
+  onComment,
   search,
   onSearchCount,
 }: PreviewProps) {
   const content = useRef<View>(null);
-  const actions = useRef<View>(null);
-  const [selection, setSelection] = useState<RenderedSelection | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const { draft, close, focused } = useSelectionDraft(content);
   const decorations = useRef<ReturnType<typeof decoratePreview> | null>(null);
   const onHoverRef = useRef(onHover);
   onHoverRef.current = onHover;
   const onOpenRef = useRef(onOpenNote);
   onOpenRef.current = onOpenNote;
 
-  useEffect(() => watchSelection(content.current, setSelection), []);
-  useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
   useEffect(() => {
     decorations.current = decoratePreview(
       content.current,
@@ -807,45 +855,36 @@ function PreviewView({
     () => ({
       ...readingLayout(compact),
       scroll: { flex: 1, minHeight: 0 },
-      actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
-      button: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
-        backgroundColor: theme.colors.accent,
-      },
-      label: { color: theme.colors.accentForeground },
     }),
-    [theme, compact],
+    [compact],
   );
+  const anchor = (): Anchor | null =>
+    draft ? { view: "preview", text: draft.text, hint: keptLength(draft.prefix) } : null;
 
   return (
     // Scrolling moves the text away from a tooltip anchored to it.
     <ScrollView style={styles.scroll} onScroll={() => onHover(null)} scrollEventThrottle={100}>
       <View style={styles.gutter}>
-        <View ref={content} style={styles.frame}>
+        <View ref={content} style={styles.frame} onLayout={(event) => setSize(event.nativeEvent.layout)}>
           <Markdown>{body}</Markdown>
           <FootnoteList notes={notes} theme={theme} />
-          {selection ? (
-            <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
-              {ASK_ACTIONS.map((action) => (
-                <Pressable
-                  key={action.mode}
-                  accessibilityRole="button"
-                  accessibilityLabel={`선택한 부분 ${action.label}`}
-                  style={styles.button}
-                  onPress={() => {
-                    onAction(
-                      { view: "preview", text: selection.text, hint: keptLength(selection.prefix) },
-                      action.mode,
-                    );
-                    setSelection(null);
-                  }}
-                >
-                  <Text style={styles.label}>{action.label}</Text>
-                </Pressable>
-              ))}
-            </View>
+          {draft ? (
+            <SelectionComposer
+              draft={draft}
+              focused={focused}
+              theme={theme}
+              containerWidth={size.width}
+              containerHeight={size.height}
+              onClose={close}
+              onComment={async (comment) => {
+                const picked = anchor();
+                return picked ? onComment(picked, comment) : false;
+              }}
+              onAsk={(mode, typed) => {
+                const picked = anchor();
+                if (picked) onAction(picked, mode, typed);
+              }}
+            />
           ) : null}
         </View>
       </View>

@@ -233,3 +233,23 @@ test("removeFootnote drops the highlight, every reference and the definition", (
   });
   assert.equal(removeFootnote(doc, comments, "9").found, false);
 });
+
+test("a document comment keeps overlapping notes and adds only a reference there", () => {
+  const doc = "x ==abc==[^1] y\n";
+  const comments = "[^1]: **설명: abc**\n\n    old\n";
+  const from = doc.indexOf("b");
+  const result = annotate(doc, comments, { from, to: from + 1 }, "주석", "b", "내 생각", { comment: true });
+  assert.deepEqual(result.replaced, []);
+  assert.equal(result.doc, "x ==ab[^2]c==[^1] y\n");
+  const { notes } = prepareFootnotes(result.doc, result.comments);
+  assert.deepEqual(
+    notes.map((n) => [n.label, n.meta.comment === true]),
+    [["2", true], ["1", false]],
+  );
+});
+
+test("a document comment on free text is highlighted and marked as a comment", () => {
+  const result = annotate("hello world\n", "", { from: 6, to: 11 }, "주석", "world", "좋다", { comment: true });
+  assert.equal(result.doc, "hello ==world==[^1]\n");
+  assert.match(result.comments, /^\[\^1\]: \*\*주석: world\*\* <!-- doc-ask \{"comment":true\} -->/);
+});
