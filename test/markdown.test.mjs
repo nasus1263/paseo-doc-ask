@@ -16,6 +16,7 @@ import {
   nextFootnoteLabel,
   prepareFootnotes,
   referenceOffset,
+  removeFootnote,
   setNoteMeta,
 } from "../shared/markdown.ts";
 
@@ -220,4 +221,15 @@ test("setNoteMeta stores bookmark and memo on the definition line, hidden from c
   // Clearing everything removes the comment.
   assert.equal(setNoteMeta(marked, "1", { bookmark: false, memo: " " }), comments);
   assert.equal(setNoteMeta(comments, "9", { bookmark: true }), null);
+});
+
+test("removeFootnote drops the highlight, every reference and the definition", () => {
+  const doc = "a ==x==[^1] b[^2] c[^1]\n";
+  const comments = "[^1]: **설명: x** <!-- doc-ask {\"bookmark\":true} -->\n\n    old\n\n[^2]: **설명: b**\n\n    keep\n";
+  assert.deepEqual(removeFootnote(doc, comments, "1"), {
+    doc: "a x b[^2] c\n",
+    comments: "[^2]: **설명: b**\n\n    keep\n",
+    found: true,
+  });
+  assert.equal(removeFootnote(doc, comments, "9").found, false);
 });

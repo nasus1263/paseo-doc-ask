@@ -310,6 +310,27 @@ export function removeOverlapping(
   return { doc, comments, at: { from, to }, removed };
 }
 
+/**
+ * Removes footnote `label` entirely: the highlights it is attached to, every reference to it,
+ * and its definition (with its bookmark and memo) from both texts. `found` reports whether
+ * anything was removed.
+ */
+export function removeFootnote(
+  doc: string,
+  comments: string,
+  label: string,
+): { doc: string; comments: string; found: boolean } {
+  const cuts = findAnnotations(doc)
+    .filter((note) => note.label === label)
+    .flatMap((note) => note.removals)
+    .sort((a, b) => b.from - a.from);
+  let nextDoc = doc;
+  for (const cut of cuts) nextDoc = nextDoc.slice(0, cut.from) + nextDoc.slice(cut.to);
+  nextDoc = removeDefinition(nextDoc, label);
+  const nextComments = removeDefinition(comments, label);
+  return { doc: nextDoc, comments: nextComments, found: nextDoc !== doc || nextComments !== comments };
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

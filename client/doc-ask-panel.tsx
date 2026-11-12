@@ -35,6 +35,7 @@ import {
   type Mark,
   type NoteMeta,
   prepareFootnotes,
+  removeFootnote,
   setNoteMeta,
   type TextRange,
 } from "../shared/markdown";
@@ -334,6 +335,43 @@ function DocAskViewer(props: PluginFilePanelProps) {
   );
   const [memoLabel, setMemoLabel] = useState<string | null>(null);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [deleteLabel, setDeleteLabel] = useState<string | null>(null);
+
+  /**
+   * Removes footnote `label`: highlights and references from the document, then the definition.
+   * The document goes first, so a failed second write leaves only an unused definition.
+   */
+  const deleteNote = useCallback(
+    async (label: string) => {
+      try {
+        const [latest, latestComments] = await Promise.all([file.readText(), loadComments()]);
+        const removed = removeFootnote(latest, hasCommentFile ? latestComments : "", label);
+        if (!removed.found) {
+          toast.error("이 각주를 찾지 못했습니다.");
+          return false;
+        }
+        if (removed.doc !== latest) {
+          await file.writeText(removed.doc);
+          show(removed.doc);
+        }
+        if (hasCommentFile && removed.comments !== latestComments) {
+          const { status } = await writeComments({ path: file.path, text: removed.comments, base: latestComments });
+          if (status === "conflict") {
+            toast.error("본문에서는 지웠지만 주석 파일이 그사이 변경되어 정의는 남았습니다.");
+            return false;
+          }
+          setComments(removed.comments);
+        }
+        setMessage((current) => (current?.note === label ? null : current));
+        toast.show("각주를 삭제했습니다.", { variant: "success" });
+        return true;
+      } catch (cause) {
+        toast.error(writeFailure(cause).replace("저장 실패", "삭제 실패"));
+        return false;
+      }
+    },
+    [file, hasCommentFile, loadComments, show, toast, writeComments],
+  );
 
   // Jumps: show the preview, scroll footnote `label` into view, and open it in the panel. The
   // preview hands over its reveal function once mounted.
@@ -481,6 +519,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
     ask: (selection, mode) => onAction({ view: "note", text: selection.text, label: selection.label }, mode),
     toggleBookmark: (label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
     editMemo: setMemoLabel,
+    deleteNote: setDeleteLabel,
     openNote: jumpTo,
     closeMessage: () => setMessage(null),
   };
@@ -489,6 +528,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
       ask: (selection, mode) => actionsRef.current?.ask(selection, mode),
       toggleBookmark: (label) => actionsRef.current?.toggleBookmark(label),
       editMemo: (label) => actionsRef.current?.editMemo(label),
+      deleteNote: (label) => actionsRef.current?.deleteNote(label),
       openNote: (label) => actionsRef.current?.openNote(label),
       closeMessage: () => actionsRef.current?.closeMessage(),
     }),
@@ -639,6 +679,14 @@ function DocAskViewer(props: PluginFilePanelProps) {
         }}
       />
       <PromptModal open={promptOpen} theme={theme} onClose={() => setPromptOpen(false)} />
+      <DeleteNoteModal
+        note={deleteLabel === null ? null : (prepared?.notes.find((n) => n.label === deleteLabel) ?? null)}
+        theme={theme}
+        onClose={() => setDeleteLabel(null)}
+        onConfirm={async () => {
+          if (deleteLabel !== null && (await deleteNote(deleteLabel))) setDeleteLabel(null);
+        }}
+      />
       <MemoModal
         memo={memoLabel === null ? null : (prepared?.notes.find((n) => n.label === memoLabel)?.meta.memo ?? "")}
         theme={theme}
@@ -1136,6 +1184,60 @@ function PromptModal({ open, theme, onClose }: { open: boolean; theme: Theme; on
   );
 }
 
+/** Confirms removing a footnote; `note` is null while closed. */
+function DeleteNoteModal({
+  note,
+  theme,
+  onClose,
+  onConfirm,
+}: {
+  note: Footnote | null;
+  theme: Theme;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const styles = useMemo(
+    () => ({
+      ...modalStyles(theme),
+      title: { color: theme.colors.foreground, fontWeight: "600" as const },
+      danger: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 6, backgroundColor: theme.colors.statusDanger },
+      dangerLabel: { color: "#ffffff" },
+    }),
+    [theme],
+  );
+  const confirm = async () => {
+    setDeleting(true);
+    try {
+      await onConfirm();
+    } finally {
+      setDeleting(false);
+    }
+  };
+  const extras = [note?.meta.bookmark ? "북마크" : null, note?.meta.memo ? "메모" : null].filter(Boolean);
+  return (
+    <Modal title="각주 삭제" open={note !== null} onOpenChange={(open) => !open && onClose()}>
+      <Modal.Content>
+        <Text style={styles.title} numberOfLines={2}>
+          {note ? `${note.number}. ${(note.content.split("\n")[0] ?? "").replace(/\*\*/g, "")}` : ""}
+        </Text>
+        <Text style={styles.muted}>
+          이 각주의 형광펜, 본문 참조, 내용{extras.length > 0 ? `(${extras.join("·")} 포함)` : ""}을 모두 지웁니다. 되돌릴 수
+          없습니다.
+        </Text>
+        <View style={styles.buttons}>
+          <Pressable accessibilityRole="button" onPress={onClose}>
+            <Text style={styles.secondary}>취소</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" disabled={deleting} onPress={confirm} style={styles.danger}>
+            <Text style={styles.dangerLabel}>{deleting ? "삭제 중…" : "삭제"}</Text>
+          </Pressable>
+        </View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
 /** Edits one footnote's memo; `memo` is null while closed. */
 function MemoModal({
   memo,
@@ -1427,6 +1529,7 @@ export function NoteDetail({
   onAsk,
   onToggleBookmark,
   onEditMemo,
+  onDelete,
   onClose,
 }: {
   message: Message;
@@ -1436,6 +1539,7 @@ export function NoteDetail({
   onAsk: (selection: NoteSelection, mode: AskMode) => void;
   onToggleBookmark: (label: string) => void;
   onEditMemo: (label: string) => void;
+  onDelete: (label: string) => void;
   onClose: () => void;
 }) {
   const toast = useToast();
@@ -1466,6 +1570,7 @@ export function NoteDetail({
       },
       quote: { color: theme.colors.foregroundMuted },
       action: { color: theme.colors.accent },
+      danger: { color: theme.colors.statusDanger },
       actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
       button: {
         paddingHorizontal: 10,
@@ -1512,6 +1617,9 @@ export function NoteDetail({
             </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel="메모 편집" onPress={() => onEditMemo(note.label)}>
               <Text style={styles.action}>메모</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="각주 삭제" onPress={() => onDelete(note.label)}>
+              <Text style={styles.danger}>삭제</Text>
             </Pressable>
           </>
         ) : null}

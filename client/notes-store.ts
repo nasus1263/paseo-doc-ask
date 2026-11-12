@@ -28,6 +28,8 @@ export interface NotesActions {
   ask(selection: NoteSelection, mode: AskMode): void;
   toggleBookmark(label: string): void;
   editMemo(label: string): void;
+  /** Asks for confirmation, then removes the footnote with its highlight and references. */
+  deleteNote(label: string): void;
   /** Shows the footnote in the document and in the panel. */
   openNote(label: string): void;
   closeMessage(): void;

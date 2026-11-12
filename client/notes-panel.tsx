@@ -54,6 +54,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
           onAsk={actions.ask}
           onToggleBookmark={actions.toggleBookmark}
           onEditMemo={actions.editMemo}
+          onDelete={actions.deleteNote}
           onClose={actions.closeMessage}
         />
       ) : null}
