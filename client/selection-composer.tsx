@@ -12,7 +12,8 @@ import { holdHighlight, keepSelectionOnPress, watchSelection } from "./web";
  * Esc cancels) and 설명, which uses the typed text as the request when there is one.
  */
 
-const BAR_WIDTH = 360;
+/** Wide enough for the key hint on one line next to 설명. */
+const BAR_WIDTH = 480;
 const LINE_HEIGHT = 20;
 const MAX_INPUT_HEIGHT = 160;
 /** How far below the pointer the box opens; mirrors `watchSelection`'s offset. */
@@ -235,7 +236,7 @@ export function SelectionComposer({
         >
           <Text style={styles.label}>설명</Text>
         </Pressable>
-        <Text style={styles.hint}>
+        <Text style={styles.hint} numberOfLines={1}>
           {saving ? "저장 중…" : `Enter ${commentLabel}(비면 설명) · Ctrl+Enter 질문 · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>
       </View>
