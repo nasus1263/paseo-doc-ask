@@ -37,6 +37,7 @@ import {
   prepareFootnotes,
   removeFootnote,
   setNoteMeta,
+  splitFollowUps,
   type TextRange,
 } from "../shared/markdown";
 import {
@@ -80,7 +81,7 @@ export type Theme = PluginFilePanelProps["theme"];
 type Anchor =
   | { view: "source"; text: string; range: TextRange }
   | { view: "preview"; text: string; hint: number }
-  | { view: "note"; text: string; label: string };
+  | { view: "note"; text: string; label: string; whole?: boolean };
 
 /**
  * What the search bar asks the views to show. `nonce` changes on every request, so the view
@@ -249,7 +250,9 @@ function DocAskViewer(props: PluginFilePanelProps) {
         if (anchor.view === "note") {
           // A follow-up joins the footnote it was asked from, in whichever file defines it.
           const inComments = hasCommentFile && definesFootnote(latestComments, anchor.label);
-          const next = appendToFootnote(inComments ? latestComments : latest, anchor.label, label, subject, answer);
+          // A question asked about a passage of the footnote names that passage under its heading.
+          const quote = anchor.whole || subject === anchor.text ? undefined : anchor.text;
+          const next = appendToFootnote(inComments ? latestComments : latest, anchor.label, label, subject, answer, quote);
           if (next === null) {
             failed("저장 실패: 이 각주를 찾지 못했습니다.");
             return;
@@ -565,7 +568,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const actionsRef = useRef<NotesActions | null>(null);
   actionsRef.current = {
     ask: (selection, mode, question) =>
-      onAction({ view: "note", text: selection.text, label: selection.label }, mode, question),
+      onAction({ view: "note", text: selection.text, label: selection.label, whole: selection.whole }, mode, question),
     toggleBookmark: (label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
     editMemo: setMemoLabel,
     deleteNote: setDeleteLabel,
@@ -1630,7 +1633,7 @@ export function NoteDetail({
     const question = followUp.trim();
     if (!question || !showsNote) return;
     const title = (note.content.split("\n")[0] ?? "").replace(/\*\*/g, "").trim() || `각주 ${note.number}`;
-    onAsk({ text: title, label: note.label }, "question", question);
+    onAsk({ text: title, label: note.label, whole: true }, "question", question);
     setFollowUp("");
   };
 
@@ -1668,6 +1671,14 @@ export function NoteDetail({
       },
       memoLabel: { color: theme.colors.foregroundMuted, fontSize: 12 },
       memoText: { color: theme.colors.foreground },
+      units: { gap: 10 },
+      unit: {
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+      },
       followUp: {
         color: theme.colors.foreground,
         borderWidth: 1,
@@ -1737,8 +1748,17 @@ export function NoteDetail({
         </Text>
       ) : null}
       {answer ? (
-        <View ref={content}>
-          <Markdown>{answer}</Markdown>
+        <View ref={content} style={styles.units}>
+          {/* A footnote shows its original note and each follow-up as a unit of its own. */}
+          {showsNote ? (
+            splitFollowUps(answer).map((unit, i) => (
+              <View key={i} style={styles.unit}>
+                <Markdown>{unit}</Markdown>
+              </View>
+            ))
+          ) : (
+            <Markdown>{answer}</Markdown>
+          )}
           {selection && showsNote && message.note !== undefined ? (
             <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
               {ASK_ACTIONS.map((action) => (

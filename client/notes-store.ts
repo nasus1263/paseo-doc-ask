@@ -26,6 +26,8 @@ export interface Message {
 export interface NoteSelection {
   text: string;
   label: string;
+  /** Asked about the whole footnote, not a passage of it: `text` is only its title. */
+  whole?: boolean;
 }
 
 export interface NotesActions {

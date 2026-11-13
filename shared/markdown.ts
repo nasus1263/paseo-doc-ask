@@ -409,8 +409,9 @@ export function definesFootnote(text: string, label: string): boolean {
 
 /**
  * Appends a follow-up to the definition of footnote `label` in `text`: a bold `label: subject`
- * heading and the answer, indented to stay inside the footnote. Null when `text` does not
- * define the footnote.
+ * heading, `quote` (the passage of the footnote it was asked about, when the heading does not
+ * already name it) as a blockquote, and the answer, indented to stay inside the footnote. Null
+ * when `text` does not define the footnote.
  */
 export function appendToFootnote(
   text: string,
@@ -418,18 +419,43 @@ export function appendToFootnote(
   heading: string,
   subject: string,
   answer: string,
+  quote?: string,
 ): string | null {
   const lines = text.split("\n");
   const span = definitionSpan(lines, label);
   if (!span) return null;
   const flat = subject.replace(/\s+/g, " ").trim();
   const title = flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX)}…` : flat;
-  const body = answer
-    .trim()
-    .split("\n")
-    .map((line) => (line.trim() === "" ? "" : `    ${line}`));
-  lines.splice(span.last + 1, 0, "", `    **${heading}: ${title}**`, "", ...body);
+  const indent = (line: string) => (line.trim() === "" ? "" : `    ${line}`);
+  const quoted = quote?.trim()
+    ? [
+        ...quote
+          .trim()
+          .split("\n")
+          .map((line) => `    > ${line}`.trimEnd()),
+        "",
+      ]
+    : [];
+  const body = answer.trim().split("\n").map(indent);
+  lines.splice(span.last + 1, 0, "", `    **${heading}: ${title}**`, "", ...quoted, ...body);
   return lines.join("\n");
+}
+
+/** A follow-up's heading line inside a footnote, as `appendToFootnote` writes it. */
+const FOLLOW_UP_HEADING = /^\*\*(설명|질문): .*\*\*$/;
+
+/**
+ * Splits a footnote's content into the original note and each follow-up appended to it, each
+ * starting at its bold `설명: …`/`질문: …` heading on a paragraph of its own.
+ */
+export function splitFollowUps(content: string): string[] {
+  const lines = content.split("\n");
+  const parts: string[][] = [[]];
+  lines.forEach((line, i) => {
+    if (i > 0 && lines[i - 1].trim() === "" && FOLLOW_UP_HEADING.test(line)) parts.push([]);
+    parts[parts.length - 1].push(line);
+  });
+  return parts.map((part) => part.join("\n").trim()).filter((part) => part !== "");
 }
 
 export interface Footnote {

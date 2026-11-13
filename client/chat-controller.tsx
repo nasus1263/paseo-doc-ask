@@ -71,7 +71,7 @@ class ChatController {
       ask: (selection, mode, question) => {
         if (mode === "question" && !question)
           this.set({ dialog: { kind: "question", label: selection.label, selected: selection.text } });
-        else void this.askNote(selection.label, selection.text, mode, question);
+        else void this.askNote(selection.label, selection.text, mode, question, selection.whole);
       },
       toggleBookmark: (label) => void this.changeMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
       editMemo: (label) => this.set({ dialog: { kind: "memo", label } }),
@@ -259,7 +259,7 @@ class ChatController {
   }
 
   /** A follow-up on a footnote shown in the side panel; the answer joins that footnote. */
-  async askNote(labelOfNote: string, selected: string, mode: AskMode, question?: string): Promise<void> {
+  async askNote(labelOfNote: string, selected: string, mode: AskMode, question?: string, whole = false): Promise<void> {
     const label = MODE_LABEL[mode];
     const subject = mode === "question" && question ? question : selected;
     const context = this.notes().find((n) => n.label === labelOfNote)?.content;
@@ -274,7 +274,8 @@ class ChatController {
         context,
       });
       const failure = await this.update(
-        (latest) => appendToFootnote(latest, labelOfNote, label, subject, answer),
+        (latest) =>
+          appendToFootnote(latest, labelOfNote, label, subject, answer, whole || subject === selected ? undefined : selected),
         "저장 실패: 이 각주를 찾지 못했습니다.",
       );
       return { answer, failure, note: labelOfNote, replaced: 0 };

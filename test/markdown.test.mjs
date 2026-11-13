@@ -18,6 +18,7 @@ import {
   referenceOffset,
   removeFootnote,
   setNoteMeta,
+  splitFollowUps,
 } from "../shared/markdown.ts";
 
 test("locateSelection keeps original offsets when text is unchanged", () => {
@@ -200,6 +201,22 @@ test("appendToFootnote accumulates follow-ups inside the same footnote", () => {
   assert.equal(appendToFootnote(comments, "9", "설명", "z", "A"), null);
   assert.ok(definesFootnote(comments, "2"));
   assert.ok(!definesFootnote(comments, "3"));
+});
+
+test("a follow-up on a passage of the footnote quotes that passage under its heading", () => {
+  const comments = "[^1]: **설명: x**\n\n    first\n";
+  const next = appendToFootnote(comments, "1", "질문", "왜?", "답", "first 의\n일부");
+  assert.equal(next, "[^1]: **설명: x**\n\n    first\n\n    **질문: 왜?**\n\n    > first 의\n    > 일부\n\n    답\n");
+});
+
+test("splitFollowUps separates the original note from each follow-up", () => {
+  const content = "**설명: x**\n\nfirst\n\n**질문: 왜?**\n\n> first\n\n답 1\n\n**설명: y**\n\n답 2";
+  assert.deepEqual(splitFollowUps(content), [
+    "**설명: x**\n\nfirst",
+    "**질문: 왜?**\n\n> first\n\n답 1",
+    "**설명: y**\n\n답 2",
+  ]);
+  assert.deepEqual(splitFollowUps("**지시: x**\n\n그냥 **질문: 아님**"), ["**지시: x**\n\n그냥 **질문: 아님**"]);
 });
 
 test("annotate reports the new footnote label", () => {
