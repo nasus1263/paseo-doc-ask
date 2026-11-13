@@ -1,6 +1,7 @@
 import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { explainRpc, resetRpc } from "../shared/explain";
+import { READ_TOOLS, runDeciding, type PermissionRequest, type PermissionResponse } from "./permissions";
 
 type Paseo = PluginHandlerContext["paseo"];
 
@@ -56,7 +57,7 @@ async function ask(
   const agent = paseo.agents.ref(agentId);
   let result;
   try {
-    result = await agent.run(buildPrompt(agentId, input, extraPrompt), { timeoutMs: RUN_TIMEOUT_MS });
+    result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt), RUN_TIMEOUT_MS, readOnly);
   } catch (cause) {
     // The agent may have been archived or deleted; find or create it again next time.
     agentIds.delete(input.workspaceId);
@@ -179,6 +180,13 @@ function rememberDoc(agentId: string, input: RpcInput<typeof explainRpc>) {
   let docs = seenDocs.get(agentId);
   if (!docs) seenDocs.set(agentId, (docs = new Map()));
   docs.set(input.path, input.document);
+}
+
+/** Explaining only reads: file reads are allowed anywhere, every other tool is denied. */
+export function readOnly(request: PermissionRequest): PermissionResponse {
+  if (READ_TOOLS.has(request.name)) return { behavior: "allow" };
+  console.log(`Denied ${request.name} while explaining`);
+  return { behavior: "deny", message: "문서 해설 중에는 파일 읽기(Read, Grep, Glob, LS)만 허용된다. 명령 실행이나 수정 없이 답하라." };
 }
 
 function describeFailure(status: string, error: string | null): string {

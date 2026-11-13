@@ -4,16 +4,11 @@ import type { commitRpc } from "../shared/explain";
 import { enqueue, residentAgent } from "./explainer";
 import { commentPathOf } from "../shared/markdown";
 import { isAllowedGitCommand } from "./git-policy";
+import { READ_TOOLS, runDeciding, type PermissionRequest, type PermissionResponse } from "./permissions";
 
 type Paseo = PluginHandlerContext["paseo"];
-type AgentHandle = ReturnType<Paseo["agents"]["ref"]>;
-type PermissionRequest = NonNullable<AgentHandle["pendingPermissions"]>[number];
-type PermissionResponse = Parameters<AgentHandle["respondToPermission"]>[0]["response"];
 
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;
-/** Upper bound on permission round trips, so a looping agent cannot hang the queue. */
-const MAX_PERMISSION_ROUNDS = 40;
-const READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS"]);
 const COMMITTED = "결과: 커밋함";
 
 const DENIED =
@@ -28,16 +23,7 @@ export function commitFootnotes(input: RpcInput<typeof commitRpc>, { paseo }: Pl
 
 async function commit(paseo: Paseo, input: RpcInput<typeof commitRpc>) {
   const agent = paseo.agents.ref(await residentAgent(paseo, input.workspaceId));
-  let result = await agent.run(buildPrompt(input.path), { timeoutMs: RUN_TIMEOUT_MS });
-  for (let round = 0; result.status === "permission" && round < MAX_PERMISSION_ROUNDS; round++) {
-    await agent.refresh();
-    const pending = agent.pendingPermissions ?? [];
-    if (pending.length === 0) break;
-    for (const request of pending) {
-      await agent.respondToPermission({ requestId: request.id, response: decide(request) });
-    }
-    result = await agent.waitForFinish(RUN_TIMEOUT_MS);
-  }
+  const result = await runDeciding(agent, buildPrompt(input.path), RUN_TIMEOUT_MS, decide);
   if (result.status !== "idle") {
     throw new Error(
       result.status === "timeout"
