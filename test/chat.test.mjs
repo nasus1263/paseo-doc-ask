@@ -64,16 +64,33 @@ test("a comment keeps overlapping notes and both stay reachable", () => {
   const notes = chatNotes(commented.comments);
   assert.deepEqual(notes.map((n) => [n.label, n.meta.comment === true]), [["1", false], ["2", true]]);
   const { body, marks } = chatMarks(text, "m", notes);
-  // The first passage is highlighted; the overlapping comment shows its superscript.
-  assert.equal(body, "⁣멱등성⁤¹은 중요하다².");
-  assert.deepEqual(marks, [{ text: "멱등성", number: 1 }]);
+  // The explanation keeps its yellow highlight and number; the instruction is painted on its own,
+  // overlapping it, with no number.
+  assert.equal(body, "⁡⁣멱등성⁤¹은 중요하다⁢.");
+  assert.deepEqual(marks, [
+    { text: "멱등성", number: 1 },
+    { text: "멱등성은 중요하다", number: 2, comment: true },
+  ]);
 });
 
 test("footnotes ending at the same place show comma-separated superscripts", () => {
   const text = "abc";
   let comments = annotateChat("", text, "m", { from: 0, to: 3 }, "설명", "abc", "A").comments;
-  comments = annotateChat(comments, text, "m", { from: 1, to: 3 }, "주석", "bc", "B", { comment: true }).comments;
-  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "⁣abc⁤¹,²");
+  comments = annotateChat(comments, text, "m", { from: 1, to: 3 }, "설명", "bc", "B").comments;
+  comments = annotateChat(comments, text, "m", { from: 2, to: 3 }, "지시", "c", "C", { comment: true }).comments;
+  // "bc" replaced "abc" as footnote 1; the instruction ending at the same place adds no number.
+  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "a⁣b⁡c⁤¹⁢");
+});
+
+test("explanations are numbered first and instructions after them", () => {
+  const text = "abcdef";
+  let comments = annotateChat("", text, "m", { from: 0, to: 2 }, "지시", "ab", "A", { comment: true }).comments;
+  comments = annotateChat(comments, text, "m", { from: 3, to: 5 }, "설명", "de", "D").comments;
+  assert.deepEqual(
+    chatNotes(comments).map((n) => [n.label, n.number]),
+    [["2", 1], ["1", 2]],
+  );
+  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "⁡ab⁢c⁣de⁤¹f");
 });
 
 test("copyComments quotes each commented passage in order, comments only", () => {

@@ -53,6 +53,7 @@ import {
   searchPreview,
   watchFindShortcut,
   watchSelection,
+  watchShown,
 } from "./web";
 import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
@@ -599,6 +600,14 @@ function DocAskViewer(props: PluginFilePanelProps) {
     if (snapshotRef.current) publishNotesIfIdle(snapshotRef.current);
     return () => withdrawNotes(owner);
   }, [owner]);
+  // Opening this document's tab makes the side panel follow it.
+  useEffect(
+    () =>
+      watchShown(root.current, (shown) => {
+        if (shown && snapshotRef.current) publishNotes(snapshotRef.current);
+      }),
+    [],
+  );
 
   const prompt = useSettings(promptSettings);
   const hasPrompt = prompt.status === "ready" && prompt.values.extraPrompt.trim() !== "";
@@ -895,25 +904,33 @@ function PreviewView({
 }
 
 /** A footnote's content floating by its reference, kept inside the panel. */
-function FootnoteTooltip({
+export function FootnoteTooltip({
   hover,
   note,
   theme,
+  room,
   onOpen,
   onHoverChange,
 }: {
   hover: FootnoteHover;
   note: Footnote;
   theme: Theme;
+  /**
+   * Visible space above and below the reference when it is not the overlay's own, as in a chat
+   * row. Rows drawn later cover the space below a row, so the tooltip opens above when it fits.
+   */
+  room?: { above: number; below: number };
   /** Pressing the tooltip opens the footnote in the message panel. */
   onOpen: () => void;
   onHoverChange: (over: boolean) => void;
 }) {
   const width = Math.min(TOOLTIP_WIDTH, hover.width - 16);
   const left = Math.max(8, Math.min(hover.left, hover.width - width - 8));
-  const spaceBelow = hover.height - hover.top - 8;
-  const spaceAbove = hover.height - hover.bottom - 8;
-  const below = spaceBelow >= 160 || spaceBelow >= spaceAbove;
+  const spaceBelow = room ? room.below - 8 : hover.height - hover.top - 8;
+  const spaceAbove = room ? room.above - 8 : hover.height - hover.bottom - 8;
+  const below = room
+    ? spaceAbove < 160 && spaceBelow > spaceAbove
+    : spaceBelow >= 160 || spaceBelow >= spaceAbove;
   const place: ViewStyle = below
     ? { top: hover.top, maxHeight: Math.min(TOOLTIP_MAX_HEIGHT, spaceBelow) }
     : { bottom: hover.bottom, maxHeight: Math.min(TOOLTIP_MAX_HEIGHT, spaceAbove) };

@@ -1,14 +1,21 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { copyText, Markdown, useToast } from "@getpaseo/plugin/client/ui";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
 import { chatMarks, copyComments } from "../shared/chat";
 import { keptLength } from "../shared/markdown";
 import { type MessageSelection, useChatController } from "./chat-controller";
-import { QuestionModal } from "./doc-ask-panel";
+import { FootnoteTooltip, QuestionModal } from "./doc-ask-panel";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
-import { decoratePreview, elementSize, type PreviewDecorations } from "./web";
+import {
+  chatViewport,
+  decoratePreview,
+  elementSize,
+  type FootnoteHover,
+  type PreviewDecorations,
+  watchShown,
+} from "./web";
 
 function formatTime(date: Date): string {
   const sameDay = date.toDateString() === new Date().toDateString();
@@ -21,8 +28,9 @@ export const CHAT_MESSAGE_KIND = "doc-ask-assistant";
 export const chatMessageSchema = z.object({ text: z.string(), key: z.string() });
 
 /**
- * A completed assistant message drawn with Paseo's Markdown, plus footnotes: highlighted
- * passages with superscript numbers that open in the side panel. Finishing a selection opens the
+ * A completed assistant message drawn with Paseo's Markdown, plus footnotes: AI explanations as
+ * yellow passages with superscript numbers, the reader's instructions as blue passages without
+ * one. Hovering either shows it; clicking opens it in the side panel. Finishing a selection opens the
  * selection box (지시, 설명, 질문). 모든 지시 복사 copies the reader's comments with the
  * passages quoted.
  */
@@ -42,16 +50,47 @@ export function ChatMessage({
   const [question, setQuestion] = useState<MessageSelection | null>(null);
   const { draft, close, focused } = useSelectionDraft(content);
 
+  // Footnote tooltip; it stays open briefly after the pointer leaves the passage so the pointer
+  // can move onto it.
+  const [hover, setHover] = useState<FootnoteHover | null>(null);
+  const overTip = useRef(false);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onHover = useCallback((next: FootnoteHover | null) => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (next) setHover(next);
+    else {
+      hideTimer.current = setTimeout(() => {
+        if (!overTip.current) setHover(null);
+      }, 200);
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    },
+    [],
+  );
+  const hoveredNote = hover ? notes.find((note) => note.number === hover.number) : undefined;
+
   useEffect(() => {
-    decorations.current = decoratePreview(
-      content.current,
-      content.current,
-      () => {},
-      (number) => controller.openNoteByNumber(number),
+    decorations.current = decoratePreview(content.current, content.current, onHover, (number) =>
+      controller.openNoteByNumber(number),
     );
     return () => {
       decorations.current?.dispose();
       decorations.current = null;
+    };
+  }, [controller, onHover]);
+  // Opening the agent's tab shows its rows: the side panel then follows this conversation.
+  useEffect(() => {
+    let shown = false;
+    const stop = watchShown(content.current, (next) => {
+      shown = next;
+      controller.rowShown(next);
+    });
+    return () => {
+      stop();
+      if (shown) controller.rowShown(false);
     };
   }, [controller]);
   useEffect(() => {
@@ -85,66 +124,95 @@ export function ChatMessage({
     draft ? { key, source: text, selected: draft.text, hint: keptLength(draft.prefix) } : null;
   // Measured only while the selection box is open, not on every row's layout.
   const size = draft ? elementSize(content.current) : null;
+  // Room for the tooltip in the visible part of the chat, not just this row.
+  const viewport = hover ? chatViewport(content.current) : null;
+  const room =
+    hover && viewport
+      ? {
+          above: viewport.top + hover.height - hover.bottom,
+          below: viewport.height - viewport.top - hover.top,
+        }
+      : undefined;
 
   return (
-    <View ref={content}>
-      <Markdown>{body}</Markdown>
-      <View style={styles.footer}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="답변 복사"
-          onPress={() => void copy(text, "답변을 복사했습니다.")}
-        >
-          <Text style={styles.meta}>복사</Text>
-        </Pressable>
-        {comments ? (
+    // The tooltip sits outside `content` so its text is not searched, selected or decorated.
+    <View>
+      <View ref={content}>
+        <Markdown>{body}</Markdown>
+        <View style={styles.footer}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="이 답변에 단 모든 지시를 인용과 함께 복사"
-            onPress={() => void copy(comments, "지시를 인용과 함께 복사했습니다.")}
+            accessibilityLabel="답변 복사"
+            onPress={() => void copy(text, "답변을 복사했습니다.")}
           >
-            <Text style={styles.link}>모든 지시 복사</Text>
+            <Text style={styles.meta}>복사</Text>
           </Pressable>
+          {comments ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="이 답변에 단 모든 지시를 인용과 함께 복사"
+              onPress={() => void copy(comments, "지시를 인용과 함께 복사했습니다.")}
+            >
+              <Text style={styles.link}>모든 지시 복사</Text>
+            </Pressable>
+          ) : null}
+          <Text style={styles.meta}>{formatTime(timestamp)}</Text>
+        </View>
+        {draft ? (
+          <SelectionComposer
+            draft={draft}
+            focused={focused}
+            theme={theme}
+            containerWidth={size?.width ?? 0}
+            containerHeight={size?.height ?? 0}
+            commentLabel="지시"
+            onClose={close}
+            onComment={async (comment) => {
+              const selection = picked();
+              if (!selection) return false;
+              const failure = await controller.addComment(selection, comment);
+              if (failure) {
+                toast.error(failure);
+                return false;
+              }
+              toast.show("지시를 달았습니다.", { variant: "success" });
+              return true;
+            }}
+            onAsk={(mode, typed) => {
+              const selection = picked();
+              if (!selection) return;
+              if (mode === "question" && !typed) setQuestion(selection);
+              else void controller.askMessage(selection, mode, typed);
+            }}
+          />
         ) : null}
-        <Text style={styles.meta}>{formatTime(timestamp)}</Text>
+        {/* Mounted only while open: a closed dialog per message adds up over a long chat. */}
+        {question ? (
+          <QuestionModal
+            selected={question.selected}
+            theme={theme}
+            onClose={() => setQuestion(null)}
+            onSubmit={(asked) => {
+              void controller.askMessage(question, "question", asked);
+              setQuestion(null);
+            }}
+          />
+        ) : null}
       </View>
-      {draft ? (
-        <SelectionComposer
-          draft={draft}
-          focused={focused}
+      {hover && hoveredNote ? (
+        <FootnoteTooltip
+          hover={hover}
+          note={hoveredNote}
           theme={theme}
-          containerWidth={size?.width ?? 0}
-          containerHeight={size?.height ?? 0}
-          commentLabel="지시"
-          onClose={close}
-          onComment={async (comment) => {
-            const selection = picked();
-            if (!selection) return false;
-            const failure = await controller.addComment(selection, comment);
-            if (failure) {
-              toast.error(failure);
-              return false;
-            }
-            toast.show("지시를 달았습니다.", { variant: "success" });
-            return true;
+          room={room}
+          onOpen={() => {
+            controller.openNote(hoveredNote.label);
+            overTip.current = false;
+            setHover(null);
           }}
-          onAsk={(mode, typed) => {
-            const selection = picked();
-            if (!selection) return;
-            if (mode === "question" && !typed) setQuestion(selection);
-            else void controller.askMessage(selection, mode, typed);
-          }}
-        />
-      ) : null}
-      {/* Mounted only while open: a closed dialog per message adds up over a long chat. */}
-      {question ? (
-        <QuestionModal
-          selected={question.selected}
-          theme={theme}
-          onClose={() => setQuestion(null)}
-          onSubmit={(asked) => {
-            void controller.askMessage(question, "question", asked);
-            setQuestion(null);
+          onHoverChange={(over) => {
+            overTip.current = over;
+            if (!over) setHover(null);
           }}
         />
       ) : null}

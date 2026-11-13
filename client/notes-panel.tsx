@@ -5,6 +5,10 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { setChatAnnotations, useChatAnnotations } from "./chat-toggle";
 import { NoteDetail } from "./doc-ask-panel";
 import { useNotes } from "./notes-store";
+import type { Footnote } from "../shared/markdown";
+
+/** Height of the footnote list: about eight one-line rows. */
+const LIST_HEIGHT = 240;
 
 /**
  * The side "주석" panel: the open footnote of the document viewer last used, and that document's
@@ -53,7 +57,17 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
       content: { padding: layout.compact ? 12 : 16, gap: 16 },
       muted: { color: theme.colors.foregroundMuted },
       document: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      section: { gap: 10 },
+      /** The footnote list keeps one height, scrolling inside, so the detail below stays put. */
+      list: {
+        height: LIST_HEIGHT,
+        flexGrow: 0,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 8,
+      },
+      listContent: { padding: 8, gap: 4 },
+      ownHeading: { marginTop: 8 },
+      text: { color: theme.colors.foreground },
       divider: { height: 1, backgroundColor: theme.colors.border },
       heading: { color: theme.colors.foregroundMuted, fontWeight: "600" as const },
       row: { flexDirection: "row" as const, gap: 8, paddingVertical: 4 },
@@ -81,6 +95,51 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
 
   const { message, actions, Dialogs } = notes;
   const openNote = message?.note === undefined ? undefined : notes.notes.find((n) => n.label === message.note);
+  // The reader's own notes are listed apart: instructions on an agent answer, comments on a document.
+  const chat = notes.path.startsWith("agent:");
+  const ownLabel = chat ? "지시" : "주석";
+  const footnotes = notes.notes.filter((note) => !note.meta.comment);
+  const own = notes.notes.filter((note) => note.meta.comment);
+
+  const row = (note: Footnote) => {
+    const [title = "", ...rest] = note.content.split("\n");
+    // An instruction shows no number in the answer: list it by its text, then its passage.
+    const instruction = chat && note.meta.comment;
+    return (
+      <Pressable
+        key={note.label}
+        accessibilityRole="button"
+        accessibilityLabel={instruction ? "지시로 이동" : `각주 ${note.number}로 이동`}
+        style={[styles.row, note.label === message?.note ? styles.rowActive : null]}
+        onPress={() => actions.openNote(note.label)}
+      >
+        <Text style={styles.number}>
+          {note.meta.bookmark ? "★" : ""}
+          {instruction ? "•" : `${note.number}.`}
+        </Text>
+        <View style={styles.body}>
+          {instruction ? (
+            <>
+              <Text style={styles.text} numberOfLines={2}>
+                {rest.join(" ").trim()}
+              </Text>
+              <Text style={styles.memo} numberOfLines={1}>
+                “{note.meta.anchor?.quote ?? title.replace(/\*\*/g, "")}”
+              </Text>
+            </>
+          ) : (
+            <Markdown>{title}</Markdown>
+          )}
+          {note.meta.memo ? (
+            <Text style={styles.memo} numberOfLines={2}>
+              메모: {note.meta.memo}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+    );
+  };
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <ChatToggle theme={theme} />
@@ -88,48 +147,37 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
       <Text style={styles.document} numberOfLines={1}>
         {notes.name}
       </Text>
-      {message ? (
-        <NoteDetail
-          message={message}
-          theme={theme}
-          note={openNote}
-          onAsk={actions.ask}
-          onToggleBookmark={actions.toggleBookmark}
-          onEditMemo={actions.editMemo}
-          onDelete={actions.deleteNote}
-          onClose={actions.closeMessage}
-        />
-      ) : null}
-      <View style={styles.divider} />
-      <View style={styles.section}>
-        <Text style={styles.heading}>각주 {notes.notes.length}</Text>
-        {notes.notes.length === 0 ? (
-          <Text style={styles.muted}>아직 각주가 없습니다. 문서에서 텍스트를 선택해 설명이나 질문을 요청하세요.</Text>
+      <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
+        <Text style={styles.heading}>각주 {footnotes.length}</Text>
+        {footnotes.length === 0 ? (
+          <Text style={styles.muted}>아직 각주가 없습니다. 텍스트를 선택해 설명이나 질문을 요청하세요.</Text>
         ) : (
-          notes.notes.map((note) => (
-            <Pressable
-              key={note.label}
-              accessibilityRole="button"
-              accessibilityLabel={`각주 ${note.number}로 이동`}
-              style={[styles.row, note.label === message?.note ? styles.rowActive : null]}
-              onPress={() => actions.openNote(note.label)}
-            >
-              <Text style={styles.number}>
-                {note.meta.bookmark ? "★" : ""}
-                {note.number}.
-              </Text>
-              <View style={styles.body}>
-                <Markdown>{note.content.split("\n")[0] ?? ""}</Markdown>
-                {note.meta.memo ? (
-                  <Text style={styles.memo} numberOfLines={2}>
-                    메모: {note.meta.memo}
-                  </Text>
-                ) : null}
-              </View>
-            </Pressable>
-          ))
+          footnotes.map(row)
         )}
-      </View>
+        {own.length > 0 ? (
+          <>
+            <Text style={[styles.heading, styles.ownHeading]}>
+              {ownLabel} {own.length}
+            </Text>
+            {own.map(row)}
+          </>
+        ) : null}
+      </ScrollView>
+      {message ? (
+        <>
+          <View style={styles.divider} />
+          <NoteDetail
+            message={message}
+            theme={theme}
+            note={openNote}
+            onAsk={actions.ask}
+            onToggleBookmark={actions.toggleBookmark}
+            onEditMemo={actions.editMemo}
+            onDelete={actions.deleteNote}
+            onClose={actions.closeMessage}
+          />
+        </>
+      ) : null}
       {Dialogs ? <Dialogs theme={theme} /> : null}
     </ScrollView>
   );

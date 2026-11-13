@@ -160,6 +160,19 @@ class ChatController {
     };
   }
 
+  /** Message rows of this agent now on screen. */
+  private shownRows = 0;
+
+  /**
+   * A row came on screen or left it. The first row to show means the agent's tab was opened,
+   * so the side panel follows this conversation, without opening it.
+   */
+  rowShown(shown: boolean): void {
+    const before = this.shownRows;
+    this.shownRows = Math.max(0, before + (shown ? 1 : -1));
+    if (before === 0 && this.shownRows > 0) publishNotes(this.snapshot());
+  }
+
   /** Makes the side panel follow this conversation and opens it. */
   private showSidePanel(): void {
     publishNotes(this.snapshot());
@@ -169,7 +182,8 @@ class ChatController {
   openNote(label: string): void {
     const note = this.notes().find((n) => n.label === label);
     if (!note) return;
-    this.set({ message: { kind: "note", title: "", status: `각주 ${note.number}`, answer: null, note: label } });
+    const status = note.meta.comment ? "지시" : `각주 ${note.number}`;
+    this.set({ message: { kind: "note", title: "", status, answer: null, note: label } });
     this.showSidePanel();
     const key = note.meta.anchor?.message;
     if (key) this.revealers.get(key)?.(note.number);

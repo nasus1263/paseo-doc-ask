@@ -2,6 +2,8 @@ import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import {
   buildFootnote,
+  COMMENT_CLOSE,
+  COMMENT_OPEN,
   type Footnote,
   MARK_CLOSE,
   MARK_OPEN,
@@ -61,11 +63,17 @@ export function anchorRange(text: string, anchor: NoteAnchor): TextRange | null 
   return index === -1 ? null : { from: index, to: index + anchor.quote.length };
 }
 
-/** An agent's footnotes in label order, numbered by label. */
+/**
+ * An agent's footnotes in label order, numbered: AI explanations from 1, then the reader's
+ * instructions after them. Instructions show no number, so explanations number without gaps;
+ * theirs only tells footnotes apart for hover and click.
+ */
 export function chatNotes(comments: string): Footnote[] {
-  return prepareFootnotes("", comments)
-    .notes.map((note, index) => ({ ...note, number: Number(note.label) || index + 1 }))
-    .sort((a, b) => a.number - b.number);
+  const byLabel = prepareFootnotes("", comments).notes.sort(
+    (a, b) => (Number(a.label) || 0) - (Number(b.label) || 0),
+  );
+  const ordered = [...byLabel.filter((note) => !note.meta.comment), ...byLabel.filter((note) => note.meta.comment)];
+  return ordered.map((note, index) => ({ ...note, number: index + 1 }));
 }
 
 const NO_MARKS: Mark[] = [];
@@ -79,16 +87,8 @@ function placedNotes(text: string, key: string, notes: Footnote[]): { note: Foot
     .sort((a, b) => a.range.from - b.range.from || a.range.to - b.range.to || a.note.number - b.note.number);
 }
 
-/**
- * Prepares one message for display: wraps each passage with a footnote in the highlight
- * sentinels and follows it with the footnote's superscript number. Where passages overlap, the
- * earlier one is highlighted and the others show only their superscript, so every footnote
- * stays reachable.
- */
-export function chatMarks(text: string, key: string, notes: Footnote[]): { body: string; marks: Mark[] } {
-  // Most messages carry no footnote: return the text as is, with one shared empty list.
-  if (!notes.some((note) => note.meta.anchor?.message === key)) return { body: text, marks: NO_MARKS };
-  const placed = placedNotes(text, key, notes);
+/** The first of each run of overlapping passages, which alone can be highlighted. */
+function firstOfOverlaps(placed: { note: Footnote; range: TextRange }[]): Set<Footnote> {
   const highlighted = new Set<Footnote>();
   let end = -1;
   for (const { note, range } of placed) {
@@ -97,32 +97,64 @@ export function chatMarks(text: string, key: string, notes: Footnote[]): { body:
       end = range.to;
     }
   }
-  // Insertions by offset: opening sentinels, then closing sentinels with the superscripts of
-  // every footnote ending there, comma-separated so adjacent numbers stay distinct.
-  const opens = new Map<number, number>();
-  const ends = new Map<number, { close: boolean; numbers: number[] }>();
-  for (const { note, range } of placed) {
-    const at = ends.get(range.to) ?? { close: false, numbers: [] };
+  return highlighted;
+}
+
+/**
+ * Prepares one message for display. AI explanations: each passage is wrapped in the highlight
+ * sentinels and followed by the footnote's superscript number; where passages overlap, the
+ * earlier one is highlighted and the others show only their superscript, so every footnote
+ * stays reachable. The reader's instructions are wrapped in their own sentinels, independent of
+ * explanations, and get no number; an instruction overlapping an earlier one is reachable from
+ * the side panel only.
+ */
+export function chatMarks(text: string, key: string, notes: Footnote[]): { body: string; marks: Mark[] } {
+  // Most messages carry no footnote: return the text as is, with one shared empty list.
+  if (!notes.some((note) => note.meta.anchor?.message === key)) return { body: text, marks: NO_MARKS };
+  const placed = placedNotes(text, key, notes);
+  const explained = placed.filter(({ note }) => !note.meta.comment);
+  const instructed = placed.filter(({ note }) => note.meta.comment);
+  const highlighted = firstOfOverlaps(explained);
+  const shownInstructions = firstOfOverlaps(instructed);
+
+  // Insertions by offset: closing sentinels (with the superscripts of every explanation ending
+  // there, comma-separated so adjacent numbers stay distinct), then opening sentinels.
+  const opens = new Map<number, string>();
+  const closes = new Map<number, { mark: boolean; numbers: number[]; comment: boolean }>();
+  const closeAt = (offset: number) => {
+    let at = closes.get(offset);
+    if (!at) closes.set(offset, (at = { mark: false, numbers: [], comment: false }));
+    return at;
+  };
+  for (const { note, range } of explained) {
+    const at = closeAt(range.to);
     at.numbers.push(note.number);
     if (highlighted.has(note)) {
-      at.close = true;
-      opens.set(range.from, (opens.get(range.from) ?? 0) + 1);
+      at.mark = true;
+      opens.set(range.from, (opens.get(range.from) ?? "") + MARK_OPEN);
     }
-    ends.set(range.to, at);
   }
-  const offsets = [...new Set([...opens.keys(), ...ends.keys()])].sort((a, b) => b - a);
+  for (const { note, range } of instructed) {
+    if (!shownInstructions.has(note)) continue;
+    closeAt(range.to).comment = true;
+    opens.set(range.from, COMMENT_OPEN + (opens.get(range.from) ?? ""));
+  }
+  const offsets = [...new Set([...opens.keys(), ...closes.keys()])].sort((a, b) => b - a);
   let body = text;
   for (const offset of offsets) {
-    const at = ends.get(offset);
-    const closing = at ? (at.close ? MARK_CLOSE : "") + at.numbers.map(superscript).join(",") : "";
-    const opening = MARK_OPEN.repeat(opens.get(offset) ?? 0);
-    body = body.slice(0, offset) + closing + opening + body.slice(offset);
+    const at = closes.get(offset);
+    const closing = at
+      ? (at.mark ? MARK_CLOSE : "") + at.numbers.map(superscript).join(",") + (at.comment ? COMMENT_CLOSE : "")
+      : "";
+    body = body.slice(0, offset) + closing + (opens.get(offset) ?? "") + body.slice(offset);
   }
+  const markOf = ({ note }: { note: Footnote }): Mark => ({ text: note.meta.anchor?.quote ?? "", number: note.number });
   return {
     body,
-    marks: placed
-      .filter(({ note }) => highlighted.has(note))
-      .map(({ note }) => ({ text: note.meta.anchor?.quote ?? "", number: note.number })),
+    marks: [
+      ...explained.filter(({ note }) => highlighted.has(note)).map(markOf),
+      ...instructed.filter(({ note }) => shownInstructions.has(note)).map((entry) => ({ ...markOf(entry), comment: true })),
+    ],
   };
 }
 

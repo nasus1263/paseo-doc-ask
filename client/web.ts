@@ -4,6 +4,8 @@ import type { EditorView, EditorViewConfig, Tooltip } from "@codemirror/view";
 import { Platform } from "react-native";
 import type { AskMode } from "../shared/explain";
 import {
+  COMMENT_CLOSE,
+  COMMENT_OPEN,
   fromSuperscript,
   isKept,
   MARK_CLOSE,
@@ -103,6 +105,8 @@ const TEXT_NODE = 3;
 const SHOW_TEXT = 4;
 const SUPERSCRIPT_DIGIT = /[⁰¹²³⁴⁵⁶⁷⁸⁹]/;
 const MARK_COLOR = "rgba(255, 212, 0, 0.38)";
+/** A reader's instruction on an agent answer. */
+const COMMENT_COLOR = "rgba(64, 150, 255, 0.32)";
 const HOVER_SLACK = 3;
 
 interface HighlightRegistry {
@@ -148,7 +152,11 @@ interface SharedHighlight {
   priority: number;
 }
 
-const SHARED_HIGHLIGHTS = { "doc-ask-mark": MARK_COLOR, "doc-ask-flash": FLASH_COLOR } as const;
+const SHARED_HIGHLIGHTS = {
+  "doc-ask-mark": MARK_COLOR,
+  "doc-ask-comment": COMMENT_COLOR,
+  "doc-ask-flash": FLASH_COLOR,
+} as const;
 type SharedHighlightName = keyof typeof SHARED_HIGHLIGHTS;
 const sharedHighlights = new Map<SharedHighlightName, SharedHighlight>();
 let sharedHighlightStyle = false;
@@ -201,9 +209,9 @@ export function decoratePreview(
   let painted: LocatedMark[] = [];
   let frame = 0;
 
+  const highlightOf = (mark: LocatedMark) => sharedHighlight(mark.comment ? "doc-ask-comment" : "doc-ask-mark");
   const unpaint = () => {
-    const highlight = painted.length > 0 ? sharedHighlight("doc-ask-mark") : null;
-    for (const mark of painted) highlight?.delete(mark.range);
+    for (const mark of painted) highlightOf(mark)?.delete(mark.range);
     painted = [];
   };
   // Reveals wait for the next paint so they see the newest DOM.
@@ -212,8 +220,7 @@ export function decoratePreview(
     frame = 0;
     unpaint();
     painted = locateMarks(root, marks);
-    const highlight = painted.length > 0 ? sharedHighlight("doc-ask-mark") : null;
-    for (const mark of painted) highlight?.add(mark.range);
+    for (const mark of painted) highlightOf(mark)?.add(mark.range);
     const waiting = afterPaint;
     afterPaint = [];
     for (const run of waiting) run();
@@ -526,6 +533,8 @@ interface LocatedMark {
   /** The text plus its superscript reference: one hover target for the footnote. */
   hoverRange: DomRange;
   number: number | null;
+  /** A reader's instruction, painted blue and followed by no reference. */
+  comment: boolean;
 }
 
 /** The node and offset just past the superscript reference that follows `offset` in `nodes[index]`. */
@@ -549,34 +558,38 @@ interface DomPoint {
   index: number;
 }
 
-/** A mark from `start` to `end`; its reference, if any, begins at `after`. */
+/** A mark from `start` to `end`; its reference, unless it is an instruction, begins at `after`. */
 function located(
   nodes: DomText[],
   start: DomPoint,
   end: DomPoint,
   after: DomPoint,
-  number: number | null,
+  mark: Mark,
 ): LocatedMark {
+  const comment = mark.comment === true;
   const range = document.createRange();
   range.setStart(start.node, start.offset);
   range.setEnd(end.node, end.offset);
   const hoverRange = document.createRange();
   hoverRange.setStart(start.node, start.offset);
-  const hoverEnd = number === null ? end : pastReference(nodes, after.index, after.offset);
+  const hoverEnd = mark.number === null || comment ? end : pastReference(nodes, after.index, after.offset);
   hoverRange.setEnd(hoverEnd.node, hoverEnd.offset);
-  return { range, hoverRange, number };
+  return { range, hoverRange, number: mark.number, comment };
 }
 
 /**
- * Finds each mark in the rendered DOM. The preview wraps marks in invisible sentinels, so each
- * one is found exactly where it is. If the renderer dropped the sentinels, falls back to a text
- * search that prefers the occurrence followed by the mark's own footnote number.
+ * Finds each mark in the rendered DOM. The preview wraps marks in invisible sentinels, one pair
+ * for footnotes and one for instructions, so each is found exactly where it is. If the renderer
+ * dropped a kind's sentinels, falls back to a text search that prefers the occurrence followed
+ * by the mark's own footnote number.
  */
 function locateMarks(root: DomElement, marks: readonly Mark[]): LocatedMark[] {
   if (marks.length === 0) return [];
   const nodes: DomText[] = [];
-  const opens: DomPoint[] = [];
-  const closes: DomPoint[] = [];
+  const sentinels = { [MARK_OPEN]: [], [MARK_CLOSE]: [], [COMMENT_OPEN]: [], [COMMENT_CLOSE]: [] } as Record<
+    string,
+    DomPoint[]
+  >;
   let plain = "";
   const at: DomPoint[] = [];
   const walker = document.createTreeWalker(root, SHOW_TEXT);
@@ -584,44 +597,60 @@ function locateMarks(root: DomElement, marks: readonly Mark[]): LocatedMark[] {
     const index = nodes.push(node) - 1;
     const text = node.textContent ?? "";
     for (let i = 0; i < text.length; i++) {
-      if (text[i] === MARK_OPEN) opens.push({ node, offset: i + 1, index });
-      else if (text[i] === MARK_CLOSE) closes.push({ node, offset: i, index });
-      if (!isKept(text[i])) continue;
-      plain += text[i];
+      const ch = text[i];
+      // An opening sentinel starts the mark after itself; a closing one ends it before itself.
+      if (ch === MARK_OPEN || ch === COMMENT_OPEN) sentinels[ch].push({ node, offset: i + 1, index });
+      else if (ch === MARK_CLOSE || ch === COMMENT_CLOSE) sentinels[ch].push({ node, offset: i, index });
+      if (!isKept(ch)) continue;
+      plain += ch;
       at.push({ node, offset: i, index });
     }
   }
 
-  if (opens.length === marks.length && closes.length === marks.length) {
-    // The reference follows the close sentinel.
-    return marks.map((mark, k) =>
-      located(nodes, opens[k], closes[k], { ...closes[k], offset: closes[k].offset + 1 }, mark.number),
-    );
-  }
-
-  const found: LocatedMark[] = [];
-  let cursor = 0;
-  for (const mark of marks) {
-    const needle = [...mark.text].filter(isKept).join("");
-    if (needle === "") continue;
-    let chosen = -1;
-    for (let index = plain.indexOf(needle, cursor); index !== -1; index = plain.indexOf(needle, index + 1)) {
-      if (chosen === -1) chosen = index;
-      if (mark.number === null) break;
-      const last = at[index + needle.length - 1];
-      const next = (last.node.textContent ?? "").slice(last.offset + 1, last.offset + 8);
-      if (next.startsWith(superscript(mark.number))) {
-        chosen = index;
-        break;
-      }
+  const locateKind = (kind: Mark[], opens: DomPoint[], closes: DomPoint[]): LocatedMark[] => {
+    if (opens.length === kind.length && closes.length === kind.length) {
+      // The reference follows the close sentinel.
+      return kind.map((mark, k) =>
+        located(nodes, opens[k], closes[k], { ...closes[k], offset: closes[k].offset + 1 }, mark),
+      );
     }
-    if (chosen === -1) continue;
-    const last = at[chosen + needle.length - 1];
-    const end = { ...last, offset: last.offset + 1 };
-    found.push(located(nodes, at[chosen], end, end, mark.number));
-    cursor = chosen + needle.length;
-  }
-  return found;
+    const found: LocatedMark[] = [];
+    let cursor = 0;
+    for (const mark of kind) {
+      const needle = [...mark.text].filter(isKept).join("");
+      if (needle === "") continue;
+      let chosen = -1;
+      for (let index = plain.indexOf(needle, cursor); index !== -1; index = plain.indexOf(needle, index + 1)) {
+        if (chosen === -1) chosen = index;
+        if (mark.number === null || mark.comment) break;
+        const last = at[index + needle.length - 1];
+        const next = (last.node.textContent ?? "").slice(last.offset + 1, last.offset + 8);
+        if (next.startsWith(superscript(mark.number))) {
+          chosen = index;
+          break;
+        }
+      }
+      if (chosen === -1) continue;
+      const last = at[chosen + needle.length - 1];
+      const end = { ...last, offset: last.offset + 1 };
+      found.push(located(nodes, at[chosen], end, end, mark));
+      cursor = chosen + needle.length;
+    }
+    return found;
+  };
+
+  return [
+    ...locateKind(
+      marks.filter((mark) => !mark.comment),
+      sentinels[MARK_OPEN],
+      sentinels[MARK_CLOSE],
+    ),
+    ...locateKind(
+      marks.filter((mark) => mark.comment),
+      sentinels[COMMENT_OPEN],
+      sentinels[COMMENT_CLOSE],
+    ),
+  ];
 }
 
 /** Text selected in rendered Markdown, with where to float the ask button. */
@@ -996,6 +1025,46 @@ export function elementSize(node: unknown): { width: number; height: number } {
   if (Platform.OS !== "web" || !node) return { width: 0, height: 0 };
   const box = (node as DomElement).getBoundingClientRect();
   return { width: box.right - box.left, height: box.bottom - box.top };
+}
+
+declare class IntersectionObserver {
+  constructor(callback: (entries: { isIntersecting: boolean }[]) => void);
+  observe(target: unknown): void;
+  disconnect(): void;
+}
+
+/**
+ * Calls `onChange` whenever `node` starts or stops being on screen. Paseo keeps inactive tabs
+ * mounted and hidden, so this is how a panel or chat learns that its tab was opened. Returns
+ * the cleanup.
+ */
+export function watchShown(node: unknown, onChange: (shown: boolean) => void): () => void {
+  if (Platform.OS !== "web" || !node || typeof IntersectionObserver === "undefined") return () => {};
+  let shown = false;
+  const observer = new IntersectionObserver((entries) => {
+    const next = entries[entries.length - 1]?.isIntersecting ?? shown;
+    if (next === shown) return;
+    shown = next;
+    onChange(next);
+  });
+  observer.observe(node);
+  return () => observer.disconnect();
+}
+
+/** The agent chat's scrolling viewport (host markup; Paseo 0.15.4). */
+const CHAT_VIEWPORT = '[data-testid="agent-chat-scroll"]';
+
+/**
+ * Where `node` sits in the visible part of the chat around it: the distance from the viewport's
+ * top to the node's top, and the viewport's height. Null outside a chat.
+ */
+export function chatViewport(node: unknown): { top: number; height: number } | null {
+  if (Platform.OS !== "web" || !node) return null;
+  const element = node as DomElement & { closest(selector: string): DomElement | null };
+  const viewport = element.closest(CHAT_VIEWPORT);
+  if (!viewport) return null;
+  const box = viewport.getBoundingClientRect();
+  return { top: element.getBoundingClientRect().top - box.top, height: box.bottom - box.top };
 }
 
 // ---------------------------------------------------------------------------

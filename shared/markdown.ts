@@ -18,6 +18,9 @@ const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
  */
 export const MARK_OPEN = "⁣";
 export const MARK_CLOSE = "⁤";
+/** The same around a reader's instruction on an agent answer, painted apart and unnumbered. */
+export const COMMENT_OPEN = "⁡";
+export const COMMENT_CLOSE = "⁢";
 
 /**
  * The companion file holding a document's footnote definitions: `a.md` → `a.comment.md`.
@@ -46,7 +49,7 @@ export function locateSelection(text: string, range: TextRange, selected: string
  * Characters that rendered Markdown drops or adds: whitespace, markup, bullets, escapes, and
  * the superscript numbers the preview draws for footnote references.
  */
-const MARKUP = /[\s*_`~#>[\]|\-+=•\\⁰¹²³⁴⁵⁶⁷⁸⁹⁣⁤]/;
+const MARKUP = /[\s*_`~#>[\]|\-+=•\\⁰¹²³⁴⁵⁶⁷⁸⁹⁣⁤⁡⁢]/;
 
 /** Whether `ch` survives the markup filter used to match rendered text against source. */
 export function isKept(ch: string): boolean {
@@ -450,6 +453,11 @@ export function fromSuperscript(text: string): number {
 export interface Mark {
   text: string;
   number: number | null;
+  /**
+   * A reader's instruction on an agent answer: wrapped in `COMMENT_OPEN`/`COMMENT_CLOSE` and
+   * painted blue, with no superscript. `number` still names its footnote for hover and click.
+   */
+  comment?: boolean;
 }
 
 // A highlight may contain a single `=` (as in "a = b"), never `==`.
