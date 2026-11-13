@@ -97,6 +97,10 @@ test("unsentComments quotes only the reader's comments not sent yet, and markSen
 
   const pending = unsentComments(text, "m", chatNotes(comments));
   assert.deepEqual(pending.labels, ["2", "3"]);
+  assert.deepEqual(pending.items, [
+    { quote: "멱등성", comment: "동의함" },
+    { quote: "캐시", comment: "예시 필요" },
+  ]);
   assert.equal(pending.block, "> 멱등성\n\n동의함\n\n> 캐시\n\n예시 필요");
 
   const sent = markSent(comments, pending.labels);

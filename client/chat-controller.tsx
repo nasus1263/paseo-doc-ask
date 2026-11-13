@@ -114,18 +114,21 @@ class ChatController {
   private latest: { key: string; text: string; time: number } | null = null;
 
   noteAnswer(key: string, text: string, time: number): void {
-    if (!this.latest || time >= this.latest.time) this.latest = { key, text, time };
+    if (this.latest && time < this.latest.time) return;
+    const changed = this.latest?.key !== key || this.latest.text !== text;
+    this.latest = { key, text, time };
+    if (changed) notifyChange(this.agentId);
   }
 
   /** The reader's unsent comments on the latest answer, to go out with their next message. */
-  outgoingComments(): { block: string; labels: string[] } | null {
+  outgoingComments(): ReturnType<typeof unsentComments> {
     if (!this.latest || this.state.text === null) return null;
     return unsentComments(this.latest.text, this.latest.key, this.notes());
   }
 
   /** Records that comments `labels` went out, so the next message does not repeat them. */
   async markCommentsSent(labels: readonly string[]): Promise<void> {
-    const failure = await this.update((latest) => markSent(latest, labels), "주석을 찾지 못했습니다.");
+    const failure = await this.update((latest) => markSent(latest, labels), "지시를 찾지 못했습니다.");
     if (failure) console.error(`[doc-ask] Could not mark comments sent: ${failure}`);
   }
 
@@ -137,8 +140,10 @@ class ChatController {
   }
 
   private set(change: Partial<State>): void {
+    const textChanged = change.text !== undefined && change.text !== this.state.text;
     this.state = { ...this.state, ...change };
     for (const listener of this.listeners) listener();
+    if (textChanged) notifyChange(this.agentId);
     refreshNotes(this.snapshot());
   }
 
@@ -229,7 +234,7 @@ class ChatController {
     try {
       return await this.update(
         (latest) =>
-          annotateChat(latest, selection.source, selection.key, range, "주석", selection.selected, comment, {
+          annotateChat(latest, selection.source, selection.key, range, "지시", selection.selected, comment, {
             comment: true,
           }).comments,
         "",
@@ -351,6 +356,19 @@ class ChatController {
 }
 
 const controllers = new Map<string, ChatController>();
+const changeListeners = new Set<(agentId: string) => void>();
+
+function notifyChange(agentId: string): void {
+  for (const listener of changeListeners) listener(agentId);
+}
+
+/** Calls `listener` when an agent's footnotes or latest answer change. */
+export function onChatChange(listener: (agentId: string) => void): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
 
 function controllerFor(agentId: string): ChatController {
   let controller = controllers.get(agentId);

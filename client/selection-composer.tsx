@@ -77,6 +77,7 @@ export function SelectionComposer({
   theme,
   containerWidth,
   containerHeight,
+  commentLabel = "주석",
   onComment,
   onAsk,
   onClose,
@@ -86,6 +87,8 @@ export function SelectionComposer({
   theme: Theme;
   containerWidth: number;
   containerHeight: number;
+  /** What a saved comment is called: "주석" on documents, "지시" on agent answers. */
+  commentLabel?: string;
   /** Saves the typed text as a comment; resolves true when saved. */
   onComment: (text: string) => Promise<boolean>;
   /** Asks the AI; `text` is the typed request or question, if any. */
@@ -220,7 +223,7 @@ export function SelectionComposer({
         onKeyPress={(event) => onKeyPress(event as unknown as KeyEvent)}
         placeholder="내용 입력"
         placeholderTextColor={theme.colors.foregroundMuted}
-        accessibilityLabel="주석, 또는 설명 요청이나 질문 내용"
+        accessibilityLabel={`${commentLabel}, 또는 설명 요청이나 질문 내용`}
         style={[styles.input, { height: inputHeight }]}
       />
       <View style={styles.row}>
@@ -233,7 +236,7 @@ export function SelectionComposer({
           <Text style={styles.label}>설명</Text>
         </Pressable>
         <Text style={styles.hint}>
-          {saving ? "저장 중…" : "Enter 주석(비면 설명) · Ctrl+Enter 질문 · Shift+Enter 줄바꿈 · Esc 취소"}
+          {saving ? "저장 중…" : `Enter ${commentLabel}(비면 설명) · Ctrl+Enter 질문 · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>
       </View>
     </View>

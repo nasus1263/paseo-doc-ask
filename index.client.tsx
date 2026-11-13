@@ -35,14 +35,15 @@ export default function contribute(client: PluginClientContext) {
     }),
     initChatAnnotations(client),
     installCommentPills(client),
-    // Comments exist only on answers this plugin draws, so they go out only while it draws them.
+    // Instructions (the reader's comments) exist only on answers this plugin draws, so they go
+    // out only while it draws them.
     installCommentSendHook((agentId) => {
       if (!chatAnnotationsEnabled() || !includeCommentsEnabled()) return null;
       const controller = existingChatController(agentId);
       const pending = controller?.outgoingComments();
       if (!controller || !pending) return null;
       return {
-        text: `직전 답변에 단 내 주석:\n\n${pending.block}`,
+        text: `직전 답변에 단 내 지시:\n\n${pending.block}`,
         onSent: () => void controller.markCommentsSent(pending.labels),
       };
     }),

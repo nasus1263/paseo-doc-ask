@@ -131,29 +131,46 @@ export function chatMarks(text: string, key: string, notes: Footnote[]): { body:
  * each passage quoted, followed by the comment.
  */
 export function copyComments(text: string, key: string, notes: Footnote[]): string {
-  return placedNotes(text, key, notes)
-    .filter(({ note }) => note.meta.comment)
-    .map(({ note, range }) => {
-      const quote = text
-        .slice(range.from, range.to)
+  return commentEntries(text, key, notes)
+    .map(({ quote, comment }) => {
+      const quoted = quote
         .split("\n")
         .map((line) => `> ${line}`)
         .join("\n");
-      // The definition starts with its bold "주석: …" title; the comment follows it.
-      const comment = note.content.replace(/^\*\*[^\n]*\*\*\s*/, "").trim();
-      return `${quote}\n\n${comment}`;
+      return `${quoted}\n\n${comment}`;
     })
     .join("\n\n");
 }
 
+/** The reader's comments on message `key` in passage order: the passage and the comment. */
+function commentEntries(text: string, key: string, notes: Footnote[]): { label: string; quote: string; comment: string }[] {
+  return placedNotes(text, key, notes)
+    .filter(({ note }) => note.meta.comment)
+    .map(({ note, range }) => ({
+      label: note.label,
+      quote: text.slice(range.from, range.to),
+      // The definition starts with its bold title, such as "지시: …"; the comment follows it.
+      comment: note.content.replace(/^\*\*[^\n]*\*\*\s*/, "").trim(),
+    }));
+}
+
 /**
- * The reader's comments on message `key` not yet sent to the agent, quoted the way
- * `copyComments` does, with their labels; null when there are none.
+ * The reader's comments on message `key` not yet sent to the agent: quoted the way
+ * `copyComments` does, one by one, and their labels. Null when there are none.
  */
-export function unsentComments(text: string, key: string, notes: Footnote[]): { block: string; labels: string[] } | null {
-  const unsent = placedNotes(text, key, notes).filter(({ note }) => note.meta.comment && !note.meta.sent);
-  if (unsent.length === 0) return null;
-  return { block: copyComments(text, key, unsent.map(({ note }) => note)), labels: unsent.map(({ note }) => note.label) };
+export function unsentComments(
+  text: string,
+  key: string,
+  notes: Footnote[],
+): { block: string; labels: string[]; items: { quote: string; comment: string }[] } | null {
+  const unsent = notes.filter((note) => note.meta.comment && !note.meta.sent);
+  const entries = commentEntries(text, key, unsent);
+  if (entries.length === 0) return null;
+  return {
+    block: copyComments(text, key, unsent),
+    labels: entries.map((entry) => entry.label),
+    items: entries.map(({ quote, comment }) => ({ quote, comment })),
+  };
 }
 
 /** Marks footnotes `labels` in `comments` as sent to the agent. */

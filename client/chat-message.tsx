@@ -23,7 +23,7 @@ export const chatMessageSchema = z.object({ text: z.string(), key: z.string() })
 /**
  * A completed assistant message drawn with Paseo's Markdown, plus footnotes: highlighted
  * passages with superscript numbers that open in the side panel. Finishing a selection opens the
- * selection box (comment, 설명, 질문). 모든 주석 복사 copies the reader's comments with the
+ * selection box (지시, 설명, 질문). 모든 지시 복사 copies the reader's comments with the
  * passages quoted.
  */
 export function ChatMessage({
@@ -100,10 +100,10 @@ export function ChatMessage({
         {comments ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="이 답변에 단 모든 주석을 인용과 함께 복사"
-            onPress={() => void copy(comments, "주석을 인용과 함께 복사했습니다.")}
+            accessibilityLabel="이 답변에 단 모든 지시를 인용과 함께 복사"
+            onPress={() => void copy(comments, "지시를 인용과 함께 복사했습니다.")}
           >
-            <Text style={styles.link}>모든 주석 복사</Text>
+            <Text style={styles.link}>모든 지시 복사</Text>
           </Pressable>
         ) : null}
         <Text style={styles.meta}>{formatTime(timestamp)}</Text>
@@ -115,6 +115,7 @@ export function ChatMessage({
           theme={theme}
           containerWidth={size?.width ?? 0}
           containerHeight={size?.height ?? 0}
+          commentLabel="지시"
           onClose={close}
           onComment={async (comment) => {
             const selection = picked();
@@ -124,7 +125,7 @@ export function ChatMessage({
               toast.error(failure);
               return false;
             }
-            toast.show("주석을 달았습니다.", { variant: "success" });
+            toast.show("지시를 달았습니다.", { variant: "success" });
             return true;
           }}
           onAsk={(mode, typed) => {
