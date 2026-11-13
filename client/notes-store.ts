@@ -19,14 +19,18 @@ export interface Message {
   note?: string;
 }
 
-/** A selection in a footnote shown in the side panel; its answer joins that footnote. */
+/**
+ * A selection in a footnote shown in the side panel, or the footnote's title for a follow-up
+ * asked without one; its answer joins that footnote.
+ */
 export interface NoteSelection {
   text: string;
   label: string;
 }
 
 export interface NotesActions {
-  ask(selection: NoteSelection, mode: AskMode): void;
+  /** `question` is the typed question or request, if any. */
+  ask(selection: NoteSelection, mode: AskMode, question?: string): void;
   toggleBookmark(label: string): void;
   editMemo(label: string): void;
   /** Asks for confirmation, then removes the footnote with its highlight and references. */

@@ -1,14 +1,15 @@
-import { TextInput } from "@getpaseo/plugin/client/ui";
+import { copyText, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type MutableRefObject, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { AskMode } from "../shared/explain";
 import type { Theme } from "./doc-ask-panel";
-import { ASK_ACTIONS, holdHighlight, keepSelectionOnPress, watchSelection } from "./web";
+import { holdHighlight, keepSelectionOnPress, watchSelection } from "./web";
 
 /**
  * The box that opens where a selection ends, shared by documents and agent answers: a focused
- * text field (Enter saves it as the reader's comment, Shift+Enter breaks the line, Esc cancels)
- * and 설명/질문, which use the typed text as the request or question when there is one.
+ * text field (Enter saves it as the reader's comment or, when empty, asks for 설명; Ctrl+Enter
+ * asks it as a question; Ctrl+C when empty copies the selection; Shift+Enter breaks the line;
+ * Esc cancels) and 설명, which uses the typed text as the request when there is one.
  */
 
 const BAR_WIDTH = 360;
@@ -59,7 +60,14 @@ export function useSelectionDraft(container: RefObject<View | null>): {
 
 /** Key events from the text field; on web `nativeEvent` is the DOM keyboard event. */
 interface KeyEvent {
-  nativeEvent: { key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number };
+  nativeEvent: {
+    key: string;
+    shiftKey?: boolean;
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+    isComposing?: boolean;
+    keyCode?: number;
+  };
   preventDefault(): void;
 }
 
@@ -85,13 +93,14 @@ export function SelectionComposer({
   onClose: () => void;
 }) {
   const bar = useRef<View>(null);
+  const toast = useToast();
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
   const [height, setHeight] = useState(0);
   useEffect(() => {
     setText("");
   }, [draft.id]);
-  // Pressing 설명/질문 must not blur the text field first.
+  // Pressing 설명 must not blur the text field first.
   useEffect(() => keepSelectionOnPress(bar.current), [draft.id]);
 
   const save = async () => {
@@ -105,12 +114,34 @@ export function SelectionComposer({
     }
   };
 
+  const ask = (mode: AskMode) => {
+    onAsk(mode, text.trim() || undefined);
+    onClose();
+  };
+
+  const copySelection = async () => {
+    try {
+      await copyText(draft.text);
+      toast.show("선택한 부분을 복사했습니다.", { variant: "success" });
+      onClose();
+    } catch {
+      toast.error("복사하지 못했습니다.");
+    }
+  };
+
   const onKeyPress = (event: KeyEvent) => {
-    const { key, shiftKey, isComposing, keyCode } = event.nativeEvent;
+    const { key, shiftKey, ctrlKey, metaKey, isComposing, keyCode } = event.nativeEvent;
+    const mod = ctrlKey || metaKey;
     // Enter while an IME is composing (Korean, Japanese, …) only finishes the character.
     if (key === "Enter" && !shiftKey && !isComposing && keyCode !== 229) {
       event.preventDefault();
-      void save();
+      if (mod) ask("question");
+      else if (text.trim()) void save();
+      else ask("term");
+    } else if (mod && key.toLowerCase() === "c" && !text) {
+      // Nothing to copy in the empty field: copy the selected passage instead.
+      event.preventDefault();
+      void copySelection();
     } else if (key === "Escape") {
       event.preventDefault();
       onClose();
@@ -193,21 +224,17 @@ export function SelectionComposer({
         style={[styles.input, { height: inputHeight }]}
       />
       <View style={styles.row}>
-        {ASK_ACTIONS.map((action) => (
-          <Pressable
-            key={action.mode}
-            accessibilityRole="button"
-            accessibilityLabel={`선택한 부분 ${action.label}`}
-            style={styles.button}
-            onPress={() => {
-              onAsk(action.mode, text.trim() || undefined);
-              onClose();
-            }}
-          >
-            <Text style={styles.label}>{action.label}</Text>
-          </Pressable>
-        ))}
-        <Text style={styles.hint}>{saving ? "저장 중…" : "Enter 주석 · Shift+Enter 줄바꿈 · Esc 취소"}</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="선택한 부분 설명"
+          style={styles.button}
+          onPress={() => ask("term")}
+        >
+          <Text style={styles.label}>설명</Text>
+        </Pressable>
+        <Text style={styles.hint}>
+          {saving ? "저장 중…" : "Enter 주석(비면 설명) · Ctrl+Enter 질문 · Shift+Enter 줄바꿈 · Esc 취소"}
+        </Text>
       </View>
     </View>
   );

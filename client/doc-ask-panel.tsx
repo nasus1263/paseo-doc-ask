@@ -563,7 +563,8 @@ function DocAskViewer(props: PluginFilePanelProps) {
   // What the side panel shows and does for this document. Actions stay stable and call the latest.
   const actionsRef = useRef<NotesActions | null>(null);
   actionsRef.current = {
-    ask: (selection, mode) => onAction({ view: "note", text: selection.text, label: selection.label }, mode),
+    ask: (selection, mode, question) =>
+      onAction({ view: "note", text: selection.text, label: selection.label }, mode, question),
     toggleBookmark: (label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
     editMemo: setMemoLabel,
     deleteNote: setDeleteLabel,
@@ -572,7 +573,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
   };
   const actions = useMemo<NotesActions>(
     () => ({
-      ask: (selection, mode) => actionsRef.current?.ask(selection, mode),
+      ask: (selection, mode, question) => actionsRef.current?.ask(selection, mode, question),
       toggleBookmark: (label) => actionsRef.current?.toggleBookmark(label),
       editMemo: (label) => actionsRef.current?.editMemo(label),
       deleteNote: (label) => actionsRef.current?.deleteNote(label),
@@ -1570,7 +1571,8 @@ function modalStyles(theme: Theme) {
 
 /**
  * The open footnote, or a request's status and answer, as the side "주석" panel shows it.
- * Selecting text in a shown footnote offers 설명/질문 whose answers join that footnote.
+ * Selecting text in a shown footnote offers 설명/질문, and the field below it asks about the whole
+ * footnote; the answers join that footnote.
  */
 export function NoteDetail({
   message,
@@ -1586,7 +1588,7 @@ export function NoteDetail({
   theme: Theme;
   /** The footnote the message is about, with its current content, if any. */
   note: Footnote | undefined;
-  onAsk: (selection: NoteSelection, mode: AskMode) => void;
+  onAsk: (selection: NoteSelection, mode: AskMode, question?: string) => void;
   onToggleBookmark: (label: string) => void;
   onEditMemo: (label: string) => void;
   onDelete: (label: string) => void;
@@ -1603,6 +1605,17 @@ export function NoteDetail({
   const [selection, setSelection] = useState<RenderedSelection | null>(null);
   useEffect(() => (showsNote ? watchSelection(content.current, setSelection) : undefined), [showsNote]);
   useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
+  const [followUp, setFollowUp] = useState("");
+  useEffect(() => setFollowUp(""), [message.note]);
+
+  /** Asks the typed question about the whole footnote, named by its title line. */
+  const askFollowUp = () => {
+    const question = followUp.trim();
+    if (!question || !showsNote) return;
+    const title = (note.content.split("\n")[0] ?? "").replace(/\*\*/g, "").trim() || `각주 ${note.number}`;
+    onAsk({ text: title, label: note.label }, "question", question);
+    setFollowUp("");
+  };
 
   const styles = useMemo(
     () => ({
@@ -1638,6 +1651,14 @@ export function NoteDetail({
       },
       memoLabel: { color: theme.colors.foregroundMuted, fontSize: 12 },
       memoText: { color: theme.colors.foreground },
+      followUp: {
+        color: theme.colors.foreground,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+      },
     }),
     [theme, message.kind],
   );
@@ -1720,6 +1741,19 @@ export function NoteDetail({
             </View>
           ) : null}
         </View>
+      ) : null}
+      {showsNote ? (
+        <TextInput
+          value={followUp}
+          onChangeText={setFollowUp}
+          onSubmitEditing={askFollowUp}
+          returnKeyType="send"
+          editable={message.kind !== "pending"}
+          placeholder="이 각주에 대해 후속 질문 (Enter 전송)"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          accessibilityLabel="이 각주에 대한 후속 질문"
+          style={styles.followUp}
+        />
       ) : null}
     </View>
   );

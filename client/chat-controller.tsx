@@ -68,9 +68,10 @@ class ChatController {
 
   constructor(readonly agentId: string) {
     this.actions = {
-      ask: (selection, mode) => {
-        if (mode === "question") this.set({ dialog: { kind: "question", label: selection.label, selected: selection.text } });
-        else void this.askNote(selection.label, selection.text, mode);
+      ask: (selection, mode, question) => {
+        if (mode === "question" && !question)
+          this.set({ dialog: { kind: "question", label: selection.label, selected: selection.text } });
+        else void this.askNote(selection.label, selection.text, mode, question);
       },
       toggleBookmark: (label) => void this.changeMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
       editMemo: (label) => this.set({ dialog: { kind: "memo", label } }),
