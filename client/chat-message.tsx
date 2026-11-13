@@ -57,6 +57,7 @@ export function ChatMessage({
   useEffect(() => {
     decorations.current?.setMarks(marks);
   }, [marks]);
+  useEffect(() => controller.noteAnswer(key, text, timestamp.getTime()), [controller, key, text, timestamp]);
   useEffect(
     () => controller.registerRevealer(key, (number) => void decorations.current?.reveal(number)),
     [controller, key],

@@ -1,6 +1,6 @@
 import { useAgent, useRpc } from "@getpaseo/plugin/client";
 import { useEffect, useSyncExternalStore } from "react";
-import { annotateChat, chatNotes, chatNotesReadRpc, chatNotesWriteRpc } from "../shared/chat";
+import { annotateChat, chatNotes, chatNotesReadRpc, chatNotesWriteRpc, markSent, unsentComments } from "../shared/chat";
 import { type AskMode, explainRpc } from "../shared/explain";
 import {
   appendToFootnote,
@@ -109,6 +109,25 @@ class ChatController {
     return this.parsed.notes;
   }
   private parsed: { text: string; notes: Footnote[] } | null = null;
+
+  /** The newest completed answer drawn so far: the "previous answer" of the next message. */
+  private latest: { key: string; text: string; time: number } | null = null;
+
+  noteAnswer(key: string, text: string, time: number): void {
+    if (!this.latest || time >= this.latest.time) this.latest = { key, text, time };
+  }
+
+  /** The reader's unsent comments on the latest answer, to go out with their next message. */
+  outgoingComments(): { block: string; labels: string[] } | null {
+    if (!this.latest || this.state.text === null) return null;
+    return unsentComments(this.latest.text, this.latest.key, this.notes());
+  }
+
+  /** Records that comments `labels` went out, so the next message does not repeat them. */
+  async markCommentsSent(labels: readonly string[]): Promise<void> {
+    const failure = await this.update((latest) => markSent(latest, labels), "주석을 찾지 못했습니다.");
+    if (failure) console.error(`[doc-ask] Could not mark comments sent: ${failure}`);
+  }
 
   registerRevealer(key: string, reveal: (number: number) => void): () => void {
     this.revealers.set(key, reveal);
@@ -337,6 +356,11 @@ function controllerFor(agentId: string): ChatController {
   let controller = controllers.get(agentId);
   if (!controller) controllers.set(agentId, (controller = new ChatController(agentId)));
   return controller;
+}
+
+/** The controller of `agentId` if one of its answers has been drawn. */
+export function existingChatController(agentId: string): ChatController | undefined {
+  return controllers.get(agentId);
 }
 
 function useChatState(controller: ChatController): State {

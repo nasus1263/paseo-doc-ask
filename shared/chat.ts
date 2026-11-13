@@ -147,6 +147,25 @@ export function copyComments(text: string, key: string, notes: Footnote[]): stri
 }
 
 /**
+ * The reader's comments on message `key` not yet sent to the agent, quoted the way
+ * `copyComments` does, with their labels; null when there are none.
+ */
+export function unsentComments(text: string, key: string, notes: Footnote[]): { block: string; labels: string[] } | null {
+  const unsent = placedNotes(text, key, notes).filter(({ note }) => note.meta.comment && !note.meta.sent);
+  if (unsent.length === 0) return null;
+  return { block: copyComments(text, key, unsent.map(({ note }) => note)), labels: unsent.map(({ note }) => note.label) };
+}
+
+/** Marks footnotes `labels` in `comments` as sent to the agent. */
+export function markSent(comments: string, labels: readonly string[]): string {
+  for (const note of chatNotes(comments)) {
+    if (!labels.includes(note.label)) continue;
+    comments = setNoteMeta(comments, note.label, { ...note.meta, sent: true }) ?? comments;
+  }
+  return comments;
+}
+
+/**
  * Adds a footnote on `range` of a message and appends its definition with its anchor. An AI
  * answer replaces footnotes on the same message that overlap it; a reader's comment
  * (`comment: true`) keeps them. Returns the new comment text, the new label, and the replaced
@@ -185,5 +204,9 @@ export const chatSettings = defineSettings({
   id: "chat",
   scope: "host",
   version: 1,
-  schema: z.object({ annotate: z.boolean().default(false) }),
+  schema: z.object({
+    annotate: z.boolean().default(false),
+    /** Sends the reader's comments on the latest answer along with their next message. */
+    includeComments: z.boolean().default(true),
+  }),
 });

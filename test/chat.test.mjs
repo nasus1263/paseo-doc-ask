@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, anchorRange, annotateChat, chatMarks, chatNotes, copyComments, messageKey } from "../shared/chat.ts";
+import { anchorAt, anchorRange, annotateChat, chatMarks, chatNotes, copyComments, messageKey, markSent, unsentComments } from "../shared/chat.ts";
 import { setNoteMeta } from "../shared/markdown.ts";
 
 test("messageKey prefers the id and hashes text otherwise", () => {
@@ -86,4 +86,22 @@ test("copyComments quotes each commented passage in order, comments only", () =>
     "> 첫 문장.\n\n첫 의견\n\n둘째 줄\n\n> 둘째 문장.\n\n두 번째 의견",
   );
   assert.equal(copyComments(text, "other", chatNotes(comments)), "");
+});
+
+test("unsentComments quotes only the reader's comments not sent yet, and markSent hides them", () => {
+  const text = "멱등성은 중요하다. 캐시는 어렵다.";
+  let comments = annotateChat("", text, "m", { from: 0, to: 3 }, "설명", "멱등성", "AI 설명").comments;
+  comments = annotateChat(comments, text, "m", { from: 0, to: 3 }, "주석", "멱등성", "동의함", { comment: true }).comments;
+  comments = annotateChat(comments, text, "m", { from: 11, to: 13 }, "주석", "캐시", "예시 필요", { comment: true }).comments;
+  comments = annotateChat(comments, "다른 답", "other", { from: 0, to: 2 }, "주석", "다른", "무관", { comment: true }).comments;
+
+  const pending = unsentComments(text, "m", chatNotes(comments));
+  assert.deepEqual(pending.labels, ["2", "3"]);
+  assert.equal(pending.block, "> 멱등성\n\n동의함\n\n> 캐시\n\n예시 필요");
+
+  const sent = markSent(comments, pending.labels);
+  assert.equal(unsentComments(text, "m", chatNotes(sent)), null);
+  // Sent comments keep their anchor and stay in the copy-all output.
+  assert.equal(copyComments(text, "m", chatNotes(sent)), pending.block);
+  assert.equal(unsentComments("다른 답", "other", chatNotes(sent)).labels.length, 1);
 });

@@ -506,6 +506,8 @@ export interface NoteMeta {
   anchor?: NoteAnchor;
   /** The reader's own comment on the passage, as opposed to an AI explanation or answer. */
   comment?: boolean;
+  /** A comment already sent to the agent with one of the reader's messages. */
+  sent?: boolean;
 }
 
 export interface NoteAnchor {
@@ -543,6 +545,7 @@ function splitMeta(firstLine: string): { rest: string; meta: NoteMeta } {
     const anchor = parseAnchor(parsed.anchor);
     if (anchor) meta.anchor = anchor;
     if (parsed.comment === true) meta.comment = true;
+    if (parsed.sent === true) meta.sent = true;
   } catch {
     // Unreadable metadata is ignored, not shown.
   }
@@ -555,7 +558,8 @@ function encodeMeta(meta: NoteMeta): string {
   if (meta.memo?.trim()) clean.memo = meta.memo.trim();
   if (meta.anchor) clean.anchor = meta.anchor;
   if (meta.comment) clean.comment = true;
-  if (!clean.bookmark && !clean.memo && !clean.anchor && !clean.comment) return "";
+  if (meta.sent) clean.sent = true;
+  if (!clean.bookmark && !clean.memo && !clean.anchor && !clean.comment && !clean.sent) return "";
   // Escape characters that could end the HTML comment early.
   const json = JSON.stringify(clean).replace(/>/g, "\\u003e").replace(/-/g, "\\u002d");
   return ` <!-- doc-ask ${json} -->`;

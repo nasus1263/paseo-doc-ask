@@ -997,3 +997,156 @@ export function elementSize(node: unknown): { width: number; height: number } {
   const box = (node as DomElement).getBoundingClientRect();
   return { width: box.right - box.left, height: box.bottom - box.top };
 }
+
+// ---------------------------------------------------------------------------
+// Sending comments with the next message
+//
+// WARNING: fragile by design. Paseo has no plugin API to change a message before it is sent
+// (checked up to @getpaseo/plugin 0.15.4), so this reads and edits the app's own composer markup,
+// the way the public "Annotations" plugin does. The selectors below and the React fiber walk were
+// checked against Paseo 0.15.4. A Paseo release that renames them, or changes when the composer
+// reads its text, breaks this: comments are then silently not attached (never sent twice, since
+// a block left in the box is taken back out). Fix it here.
+
+/** The composer's root and its textarea. */
+const COMPOSER_ROOT = '[data-testid="message-input-root"]';
+const COMPOSER_INPUT = "textarea[data-composer-input]";
+/** The selected agent tab of a pane, named `workspace-tab-agent_<agentId>`. */
+const ACTIVE_AGENT_TAB = '[data-testid^="workspace-tab-agent_"][aria-selected="true"]';
+const AGENT_TAB_PREFIX = "workspace-tab-agent_";
+const PANE = '[data-testid^="workspace-pane-"]';
+/** React's per-node fiber property; the composer sits inside components with an `agentId` prop. */
+const REACT_FIBER_PREFIX = "__reactFiber$";
+const FIBER_DEPTH = 120;
+
+interface ComposerNode {
+  nodeType: number;
+  parentElement: ComposerNode | null;
+  value: string;
+  readOnly: boolean;
+  disabled: boolean;
+  selectionStart: number;
+  selectionEnd: number;
+  matches(selector: string): boolean;
+  closest(selector: string): ComposerNode | null;
+  querySelector(selector: string): ComposerNode | null;
+  querySelectorAll(selector: string): ArrayLike<ComposerNode>;
+  getAttribute(name: string): string | null;
+  getClientRects(): ArrayLike<unknown>;
+  focus(options?: { preventScroll?: boolean }): void;
+  setSelectionRange(start: number, end: number): void;
+  dispatchEvent(event: unknown): boolean;
+}
+interface ComposerDocument {
+  execCommand(command: "insertText" | "delete", showUi: boolean, value?: string): boolean;
+}
+declare const Event: new (type: string, init?: { bubbles?: boolean }) => unknown;
+
+/** Comments ready to go with a message, and what to do once the message went out. */
+export interface OutgoingComments {
+  text: string;
+  onSent(): void;
+}
+
+/**
+ * When the reader sends a message from an agent's composer (Enter, Ctrl+Enter, or the send
+ * button), appends what `take` returns for that agent to the message box just before the
+ * composer reads it. One task later an emptied box means the message went out; text still in
+ * place means the key did something else, and the block is taken back out.
+ */
+export function installCommentSendHook(take: (agentId: string) => OutgoingComments | null): () => void {
+  if (Platform.OS !== "web") return () => {};
+
+  const attach = (input: ComposerNode) => {
+    if (input.readOnly || input.disabled) return;
+    // Nothing typed means nothing is sent; slash commands never reach the agent.
+    if (!input.value.trim() || input.value.trimStart().startsWith("/")) return;
+    const agentId = agentIdAround(input);
+    const outgoing = agentId ? take(agentId) : null;
+    if (!outgoing) return;
+    const block = `\n\n${outgoing.text}`;
+    if (!insertIntoComposer(input, input.value.length, block)) return;
+    setTimeout(() => {
+      const at = input.value.lastIndexOf(block);
+      if (at >= 0) deleteFromComposer(input, at, at + block.length);
+      else outgoing.onSent();
+    }, 0);
+  };
+
+  const onKeyDown: DomListener = (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.altKey || event.isComposing) return;
+    const target = event.target as ComposerNode | undefined;
+    if (target?.nodeType === 1 && target.matches(COMPOSER_INPUT)) attach(target);
+  };
+
+  /** The send button is the composer's last button while the box holds text. */
+  const onClick: DomListener = (event) => {
+    const node = event.target as ComposerNode | undefined;
+    const element = node?.nodeType === 1 ? node : node?.parentElement;
+    const pressed = element?.closest('button, [role="button"]');
+    const root = pressed?.closest(COMPOSER_ROOT);
+    if (!pressed || !root || pressed.disabled) return;
+    const buttons = root.querySelectorAll('button, [role="button"]');
+    if (buttons[buttons.length - 1] !== pressed) return;
+    const input = root.querySelector(COMPOSER_INPUT);
+    if (input) attach(input);
+  };
+
+  document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("click", onClick, true);
+  return () => {
+    document.removeEventListener("keydown", onKeyDown, true);
+    document.removeEventListener("click", onClick, true);
+  };
+}
+
+/** The agent whose composer holds `element`: its React props, else the pane's selected tab. */
+function agentIdAround(element: ComposerNode): string | null {
+  const key = Object.keys(element).find((name) => name.startsWith(REACT_FIBER_PREFIX));
+  let fiber: unknown = key ? Reflect.get(element, key) : null;
+  for (let depth = 0; depth < FIBER_DEPTH && fiber && typeof fiber === "object"; depth += 1) {
+    const props: unknown = Reflect.get(fiber, "memoizedProps");
+    if (props && typeof props === "object" && "agentId" in props) {
+      const { agentId } = props as { agentId: unknown };
+      if (typeof agentId === "string" && agentId) return agentId;
+    }
+    fiber = Reflect.get(fiber, "return");
+  }
+  const tab = element.closest(PANE)?.querySelector(ACTIVE_AGENT_TAB)?.getAttribute("data-testid");
+  return tab?.startsWith(AGENT_TAB_PREFIX) ? tab.slice(AGENT_TAB_PREFIX.length) || null : null;
+}
+
+/** Inserts `text` at `at` through the browser's editing path, so the composer sees a real edit. */
+function insertIntoComposer(input: ComposerNode, at: number, text: string): boolean {
+  const before = input.value;
+  const caret = [input.selectionStart, input.selectionEnd] as const;
+  input.focus({ preventScroll: true });
+  input.setSelectionRange(at, at);
+  const expected = before.slice(0, at) + text + before.slice(at);
+  let landed = (document as unknown as ComposerDocument).execCommand("insertText", false, text) && input.value === expected;
+  if (!landed && input.value === before) {
+    setNativeValue(input, expected);
+    landed = input.value === expected;
+  }
+  input.setSelectionRange(caret[0], caret[1]);
+  return landed;
+}
+
+/** Removes `[start, end)` from the composer through the editing path. */
+function deleteFromComposer(input: ComposerNode, start: number, end: number): void {
+  const before = input.value;
+  const caret = [input.selectionStart, input.selectionEnd] as const;
+  input.setSelectionRange(start, end);
+  const expected = before.slice(0, start) + before.slice(end);
+  if (!(document as unknown as ComposerDocument).execCommand("delete", false) || input.value !== expected) {
+    if (input.value === before) setNativeValue(input, expected);
+  }
+  input.setSelectionRange(Math.min(caret[0], start), Math.min(caret[1], start));
+}
+
+/** Sets a React-controlled textarea's value and tells React about it. */
+function setNativeValue(input: ComposerNode, value: string): void {
+  const prototype = Object.getPrototypeOf(input) as object;
+  Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
