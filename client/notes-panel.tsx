@@ -1,8 +1,7 @@
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Markdown, useToast } from "@getpaseo/plugin/client/ui";
-import { useMemo, useState } from "react";
+import { Markdown } from "@getpaseo/plugin/client/ui";
+import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { setChatAnnotations, useChatAnnotations } from "./chat-toggle";
 import { NoteDetail } from "./doc-ask-panel";
 import { useNotes } from "./notes-store";
 import type { Footnote } from "../shared/markdown";
@@ -14,41 +13,6 @@ const LIST_HEIGHT = 240;
  * The side "주석" panel: the open footnote of the document viewer last used, and that document's
  * footnote list. Selecting a footnote in the list jumps to it in the document.
  */
-/** The "대화 주석" switch: on, completed assistant answers can carry footnotes but lose Fork. */
-function ChatToggle({ theme }: { theme: PluginWorkspacePanelProps["theme"] }) {
-  const on = useChatAnnotations();
-  const toast = useToast();
-  const [saving, setSaving] = useState(false);
-  const toggle = async () => {
-    setSaving(true);
-    try {
-      await setChatAnnotations(!on);
-    } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Pressable
-      accessibilityRole="switch"
-      accessibilityState={{ checked: on }}
-      disabled={saving}
-      onPress={toggle}
-      style={{ gap: 2 }}
-    >
-      <Text style={{ color: on ? theme.colors.accent : theme.colors.foregroundMuted, fontWeight: "600" }}>
-        대화 주석 {on ? "켜짐" : "꺼짐"}
-      </Text>
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-        {on
-          ? "완료된 AI 답변에 각주를 달 수 있습니다. 이 동안 답변의 포크·읽어주기는 사라집니다."
-          : "켜면 AI 답변에 각주를 달 수 있습니다. 꺼져 있으면 Paseo 기본 답변(포크 포함)이 보입니다."}
-      </Text>
-    </Pressable>
-  );
-}
-
 export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   const notes = useNotes();
   const styles = useMemo(
@@ -83,8 +47,6 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
     return (
       <View style={styles.screen}>
         <View style={styles.content}>
-          <ChatToggle theme={theme} />
-          <View style={styles.divider} />
           <Text style={styles.muted}>
             문서 질문 패널로 연 문서나, AI 답변에 각주를 단 대화가 여기에 표시됩니다.
           </Text>
@@ -142,8 +104,6 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <ChatToggle theme={theme} />
-      <View style={styles.divider} />
       <Text style={styles.document} numberOfLines={1}>
         {notes.name}
       </Text>

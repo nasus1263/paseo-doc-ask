@@ -1,6 +1,5 @@
 import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { useSyncExternalStore } from "react";
 import { chatSettings, messageKey } from "../shared/chat";
 import { CHAT_MESSAGE_KIND } from "./chat-message";
 
@@ -106,16 +105,4 @@ export function onChatSettingsChange(listener: () => void): () => void {
 
 export function chatAnnotationsEnabled(): boolean {
   return enabled;
-}
-
-export function useChatAnnotations(): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    () => enabled,
-  );
 }
