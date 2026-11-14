@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --import ./test/ts-resolve.mjs --test test/markdown.test.mjs test/git-policy.test.mjs test/search.test.mjs test/links.test.mjs test/chat.test.mjs test/permissions.test.mjs"
+    "test": "node --import ./test/ts-resolve.mjs --test test/markdown.test.mjs test/git-policy.test.mjs test/search.test.mjs test/links.test.mjs test/chat.test.mjs test/permissions.test.mjs test/pool.test.mjs"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.15.4",

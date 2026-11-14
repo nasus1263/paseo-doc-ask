@@ -1,4 +1,5 @@
 import { useAgent, useRpc } from "@getpaseo/plugin/client";
+import { useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useSyncExternalStore } from "react";
 import { annotateChat, chatNotes, chatNotesReadRpc, chatNotesWriteRpc, markSent, unsentComments } from "../shared/chat";
 import { type AskMode, explainRpc } from "../shared/explain";
@@ -10,13 +11,13 @@ import {
   removeFootnote,
   setNoteMeta,
 } from "../shared/markdown";
-import { DeleteNoteModal, MemoModal, QuestionModal, type Theme } from "./doc-ask-panel";
+import { DeleteNoteModal, MemoModal, QuestionModal, shortTitle, type Theme } from "./doc-ask-panel";
 import { openNotesPanel } from "./host";
 import { type Message, type NotesActions, publishNotes, refreshNotes } from "./notes-store";
 
 /**
  * Footnotes on one agent's messages. Every message row of the agent shares one controller; it
- * owns the agent's footnote file contents, the request in flight, and the side panel state.
+ * owns the agent's footnote file contents, the requests in flight, and the side panel state.
  */
 
 type Read = (input: { agentId: string }) => Promise<{ text: string }>;
@@ -27,6 +28,7 @@ interface Deps {
   read: Read;
   write: Write;
   explain: Explain;
+  toast: ReturnType<typeof useToast>;
   workspaceId: string | null;
   title: string | null;
 }
@@ -60,7 +62,10 @@ class ChatController {
   state: State = { text: null, message: null, dialog: null };
   private deps: Deps | null = null;
   private loading = false;
-  private busy = false;
+  /** The newest request; it owns the side panel's message. */
+  private latestRequest = 0;
+  /** The footnote file update in progress, which the next one waits for. */
+  private updating: Promise<unknown> = Promise.resolve();
   private readonly listeners = new Set<() => void>();
   /** Message rows that can scroll a footnote into view, by message key. */
   private readonly revealers = new Map<string, (number: number) => void>();
@@ -194,8 +199,17 @@ class ChatController {
     if (note) this.openNote(note.label);
   }
 
-  /** Reads the newest footnotes, applies `change`, and writes them if nobody wrote meanwhile. */
-  private async update(change: (text: string) => string | null, missing: string): Promise<string | null> {
+  /**
+   * Reads the newest footnotes, applies `change`, and writes them if nobody wrote meanwhile.
+   * Updates run one at a time, so answers arriving together do not overwrite each other.
+   */
+  private update(change: (text: string) => string | null, missing: string): Promise<string | null> {
+    const run = this.updating.then(() => this.applyUpdate(change, missing));
+    this.updating = run.catch(() => undefined);
+    return run;
+  }
+
+  private async applyUpdate(change: (text: string) => string | null, missing: string): Promise<string | null> {
     if (!this.deps) return "연결되지 않았습니다.";
     const { text: latest } = await this.deps.read({ agentId: this.agentId });
     const next = change(latest);
@@ -289,27 +303,27 @@ class ChatController {
   ): Promise<void> {
     const deps = this.deps;
     if (!deps?.workspaceId) return;
-    if (this.busy) {
-      this.set({ message: { kind: "failed", title, status: "이전 요청의 답을 기다리는 중입니다.", answer: null, note } });
-      return;
-    }
-    this.busy = true;
+    // Requests run together; the side panel shows the newest, older ones report by toast.
+    const request = ++this.latestRequest;
+    const report = (message: Message) => {
+      if (this.latestRequest === request) this.set({ message });
+      else if (message.kind === "failed") deps.toast.error(`${shortTitle(title)} — ${message.status}`);
+      else deps.toast.show(`${shortTitle(title)} — ${message.status}`, { variant: "success" });
+    };
     this.set({ message: { kind: "pending", title, status: "AI에게 묻는 중…", answer: null, note } });
     this.showSidePanel();
     try {
       const result = await work(deps);
       if (result.failure) {
-        this.set({ message: { kind: "failed", title, status: result.failure, answer: result.answer, note } });
+        report({ kind: "failed", title, status: result.failure, answer: result.answer, note });
         return;
       }
       const status =
         result.replaced > 0 ? `겹치던 기존 각주 ${result.replaced}개를 대체해 반영했습니다.` : "각주에 반영했습니다.";
-      this.set({ message: { kind: "saved", title, status, answer: result.answer, note: result.note } });
+      report({ kind: "saved", title, status, answer: result.answer, note: result.note });
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
-      this.set({ message: { kind: "failed", title, status: `요청 실패: ${reason}`, answer: null, note } });
-    } finally {
-      this.busy = false;
+      report({ kind: "failed", title, status: `요청 실패: ${reason}`, answer: null, note });
     }
   }
 
@@ -406,10 +420,11 @@ export function useChatController(agentId: string): { controller: ChatController
   const read = useRpc(chatNotesReadRpc);
   const write = useRpc(chatNotesWriteRpc);
   const explain = useRpc(explainRpc);
+  const toast = useToast();
   const agent = useAgent(agentId, (snapshot) => ({ workspaceId: snapshot.workspaceId, title: snapshot.title }));
   useEffect(() => {
-    controller.bind({ read, write, explain, workspaceId: agent?.workspaceId ?? null, title: agent?.title ?? null });
-  }, [agent?.title, agent?.workspaceId, controller, explain, read, write]);
+    controller.bind({ read, write, explain, toast, workspaceId: agent?.workspaceId ?? null, title: agent?.title ?? null });
+  }, [agent?.title, agent?.workspaceId, controller, explain, read, toast, write]);
   // Rows follow the footnote file only, not the request status or dialogs, so a request in
   // flight does not re-render every message.
   const notes = useSyncExternalStore(controller.subscribe, () => controller.notes());

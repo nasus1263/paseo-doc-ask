@@ -113,7 +113,10 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const [view, setView] = useTabState(tab, viewSchema, defaultView);
   const [text, setText] = useState<string | null>(null);
   const latestText = useRef("");
-  const busy = useRef(false);
+  /** The newest request; it owns the side panel's message. */
+  const latestRequest = useRef(0);
+  /** The save in progress, which the next answer waits for. */
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
   const root = useRef<View>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
@@ -209,42 +212,44 @@ function DocAskViewer(props: PluginFilePanelProps) {
 
   const ask = useCallback(
     async ({ anchor, mode, question }: AskRequest) => {
-      if (busy.current) {
-        toast.show("이전 요청의 답을 기다리는 중입니다.", { variant: "warning" });
-        return;
-      }
-      busy.current = true;
+      // Requests run together; the side panel shows the newest, older ones report by toast.
+      const request = ++latestRequest.current;
       const label = MODE_LABEL[mode];
       const subject = mode === "question" && question ? question : anchor.text;
       const title = `${label}: ${subject}`;
       const note = anchor.view === "note" ? anchor.label : undefined;
+      const report = (outcome: Message) => {
+        if (latestRequest.current === request) setMessage(outcome);
+        else if (outcome.kind === "failed") toast.error(`${shortTitle(title)} — ${outcome.status}`);
+        else toast.show(`${shortTitle(title)} — ${outcome.status}`, { variant: "success" });
+      };
       setMessage({ kind: "pending", title, status: "AI에게 묻는 중…", answer: null, note });
       showSidePanel();
+      let answer: string;
       try {
-        let answer: string;
-        try {
-          ({ answer } = await explain({
-            workspaceId,
-            path: file.path,
-            document: latestText.current,
-            selection: anchor.text,
-            mode,
-            question,
-            context: note === undefined ? undefined : notesRef.current.find((n) => n.label === note)?.content,
-          }));
-        } catch (cause) {
-          setMessage({ kind: "failed", title, status: `요청 실패: ${messageOf(cause)}`, answer: null, note });
-          return;
-        }
-        const failed = (status: string) => setMessage({ kind: "failed", title, status, answer, note });
+        ({ answer } = await explain({
+          workspaceId,
+          path: file.path,
+          document: latestText.current,
+          selection: anchor.text,
+          mode,
+          question,
+          context: note === undefined ? undefined : notesRef.current.find((n) => n.label === note)?.content,
+        }));
+      } catch (cause) {
+        report({ kind: "failed", title, status: `요청 실패: ${messageOf(cause)}`, answer: null, note });
+        return;
+      }
+
+      const failed = (status: string): Message => ({ kind: "failed", title, status, answer, note });
+      const save = async (): Promise<Message> => {
         let latest: string;
         let latestComments: string;
         try {
           // Merge into the newest versions so edits made while waiting are kept.
           [latest, latestComments] = await Promise.all([file.readText(), loadComments()]);
         } catch (cause) {
-          failed(`저장 실패: 파일을 읽지 못했습니다. ${messageOf(cause)}`);
-          return;
+          return failed(`저장 실패: 파일을 읽지 못했습니다. ${messageOf(cause)}`);
         }
 
         if (anchor.view === "note") {
@@ -253,54 +258,46 @@ function DocAskViewer(props: PluginFilePanelProps) {
           // A question asked about a passage of the footnote names that passage under its heading.
           const quote = anchor.whole || subject === anchor.text ? undefined : anchor.text;
           const next = appendToFootnote(inComments ? latestComments : latest, anchor.label, label, subject, answer, quote);
-          if (next === null) {
-            failed("저장 실패: 이 각주를 찾지 못했습니다.");
-            return;
-          }
+          if (next === null) return failed("저장 실패: 이 각주를 찾지 못했습니다.");
           try {
             if (inComments) {
               const { status } = await writeComments({ path: file.path, text: next, base: latestComments });
-              if (status === "conflict") {
-                failed("저장 실패: 답을 기다리는 동안 주석 파일이 변경되었습니다.");
-                return;
-              }
+              if (status === "conflict") return failed("저장 실패: 답을 기다리는 동안 주석 파일이 변경되었습니다.");
               setComments(next);
             } else {
               await file.writeText(next);
               show(next);
             }
           } catch (cause) {
-            failed(writeFailure(cause));
-            return;
+            return failed(writeFailure(cause));
           }
-          setMessage({ kind: "saved", title, status: "각주에 추가했습니다.", answer, note });
-          return;
+          return { kind: "saved", title, status: "각주에 추가했습니다.", answer, note };
         }
 
         const at =
           anchor.view === "source"
             ? locateSelection(latest, anchor.range, anchor.text)
             : locateRendered(latest, anchor.text, anchor.hint);
-        if (!at) {
-          failed("저장 실패: 선택한 부분을 원문에서 찾지 못했습니다.");
-          return;
-        }
+        if (!at) return failed("저장 실패: 선택한 부분을 원문에서 찾지 못했습니다.");
         const annotated = annotate(latest, latestComments, at, label, subject, answer);
         const failure = await saveAnnotated(latest, latestComments, annotated);
-        if (failure) {
-          failed(failure);
-          return;
-        }
+        if (failure) return failed(failure);
         const replaced = annotated.replaced.length;
-        setMessage({
+        return {
           kind: "saved",
           title,
           status: replaced > 0 ? `겹치던 기존 각주 ${replaced}개를 대체해 반영했습니다.` : "문서에 반영했습니다.",
           answer,
           note: annotated.id,
-        });
-      } finally {
-        busy.current = false;
+        };
+      };
+      // Answers are saved one at a time, so two arriving together do not overwrite each other.
+      const saved = saving.current.then(save);
+      saving.current = saved.catch(() => undefined);
+      try {
+        report(await saved);
+      } catch (cause) {
+        report(failed(`저장 실패: ${messageOf(cause)}`));
       }
     },
     [explain, file, hasCommentFile, loadComments, saveAnnotated, show, showSidePanel, toast, workspaceId, writeComments],
@@ -1833,6 +1830,12 @@ export function DocAskPanel(props: PluginFilePanelProps) {
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** A request's title cut short for a toast. */
+export function shortTitle(title: string): string {
+  const flat = title.replace(/\s+/g, " ").trim();
+  return flat.length > 40 ? `${flat.slice(0, 40)}…` : flat;
 }
 
 /** The save-failure line for a rejected document write. */

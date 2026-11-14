@@ -1,7 +1,7 @@
 import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { commitRpc } from "../shared/explain";
-import { enqueue, residentAgent } from "./explainer";
+import { withExplainer } from "./explainer";
 import { commentPathOf } from "../shared/markdown";
 import { isAllowedGitCommand } from "./git-policy";
 import { READ_TOOLS, runDeciding, type PermissionRequest, type PermissionResponse } from "./permissions";
@@ -16,13 +16,21 @@ const DENIED =
   "git apply --cached, 주석 파일(*.comment.md)만 대상으로 한 git add, 인덱스만 커밋하는 git commit을 " +
   "각각 단독으로(필요하면 git -C <경로>) 실행할 수 있다.";
 
-/** Has the workspace's explainer commit only the footnote changes of one document. */
+/** Serializes commits per workspace so two never touch the same git index at once. */
+const queues = new Map<string, Promise<unknown>>();
+
+/** Has one of the workspace's explainers commit only the footnote changes of one document. */
 export function commitFootnotes(input: RpcInput<typeof commitRpc>, { paseo }: PluginHandlerContext) {
-  return enqueue(input.workspaceId, () => commit(paseo, input));
+  const previous = queues.get(input.workspaceId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => withExplainer(paseo, input.workspaceId, async (agentId) => ({ value: await commit(paseo, agentId, input), keep: true })));
+  queues.set(input.workspaceId, next);
+  return next;
 }
 
-async function commit(paseo: Paseo, input: RpcInput<typeof commitRpc>) {
-  const agent = paseo.agents.ref(await residentAgent(paseo, input.workspaceId));
+async function commit(paseo: Paseo, agentId: string, input: RpcInput<typeof commitRpc>) {
+  const agent = paseo.agents.ref(agentId);
   const result = await runDeciding(agent, buildPrompt(input.path), RUN_TIMEOUT_MS, decide);
   if (result.status !== "idle") {
     throw new Error(
