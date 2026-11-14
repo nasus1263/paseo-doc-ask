@@ -12,7 +12,7 @@ import {
   setNoteMeta,
 } from "../shared/markdown";
 import { DeleteNoteModal, MemoModal, QuestionModal, shortTitle, type Theme } from "./doc-ask-panel";
-import { openNotesPanel } from "./host";
+import { followAnswer, newRequestId, openNotesPanel } from "./host";
 import { type Message, type NotesActions, publishNotes, refreshNotes } from "./notes-store";
 
 /**
@@ -231,7 +231,7 @@ class ChatController {
       this.showSidePanel();
       return;
     }
-    await this.run(title, undefined, async (deps) => {
+    await this.run(title, undefined, async (deps, requestId) => {
       const { answer } = await deps.explain({
         workspaceId: deps.workspaceId ?? "",
         path: `agent:${this.agentId}`,
@@ -239,6 +239,7 @@ class ChatController {
         selection: selection.selected,
         mode,
         question,
+        requestId,
       });
       let id = "";
       let replaced = 0;
@@ -277,7 +278,7 @@ class ChatController {
     const label = MODE_LABEL[mode];
     const subject = mode === "question" && question ? question : selected;
     const context = this.notes().find((n) => n.label === labelOfNote)?.content;
-    await this.run(`${label}: ${subject}`, labelOfNote, async (deps) => {
+    await this.run(`${label}: ${subject}`, labelOfNote, async (deps, requestId) => {
       const { answer } = await deps.explain({
         workspaceId: deps.workspaceId ?? "",
         path: `agent:${this.agentId}`,
@@ -286,6 +287,7 @@ class ChatController {
         mode,
         question,
         context,
+        requestId,
       });
       const failure = await this.update(
         (latest) =>
@@ -299,7 +301,10 @@ class ChatController {
   private async run(
     title: string,
     note: string | undefined,
-    work: (deps: Deps) => Promise<{ answer: string; failure: string | null; note: string; replaced: number }>,
+    work: (
+      deps: Deps,
+      requestId: string,
+    ) => Promise<{ answer: string; failure: string | null; note: string; replaced: number }>,
   ): Promise<void> {
     const deps = this.deps;
     if (!deps?.workspaceId) return;
@@ -312,8 +317,14 @@ class ChatController {
     };
     this.set({ message: { kind: "pending", title, status: "AI에게 묻는 중…", answer: null, note } });
     this.showSidePanel();
+    // The answer shows while it is written, as long as this request owns the panel.
+    const requestId = newRequestId();
+    const stopFollowing = followAnswer(requestId, (draft) => {
+      const current = this.state.message;
+      if (this.latestRequest === request && current?.kind === "pending") this.set({ message: { ...current, answer: draft } });
+    });
     try {
-      const result = await work(deps);
+      const result = await work(deps, requestId);
       if (result.failure) {
         report({ kind: "failed", title, status: result.failure, answer: result.answer, note });
         return;
@@ -324,6 +335,8 @@ class ChatController {
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
       report({ kind: "failed", title, status: `요청 실패: ${reason}`, answer: null, note });
+    } finally {
+      stopFollowing();
     }
   }
 

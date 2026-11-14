@@ -59,7 +59,7 @@ import {
 import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
-import { openNotesPanel } from "./host";
+import { followAnswer, newRequestId, openNotesPanel } from "./host";
 import {
   type Message,
   type NoteSelection,
@@ -225,6 +225,14 @@ function DocAskViewer(props: PluginFilePanelProps) {
       };
       setMessage({ kind: "pending", title, status: "AI에게 묻는 중…", answer: null, note });
       showSidePanel();
+      // The answer shows while it is written, as long as this request owns the panel.
+      const requestId = newRequestId();
+      const stopFollowing = followAnswer(requestId, (draft) => {
+        if (latestRequest.current !== request) return;
+        setMessage((current) =>
+          current?.kind === "pending" && current.title === title ? { ...current, answer: draft } : current,
+        );
+      });
       let answer: string;
       try {
         ({ answer } = await explain({
@@ -235,10 +243,13 @@ function DocAskViewer(props: PluginFilePanelProps) {
           mode,
           question,
           context: note === undefined ? undefined : notesRef.current.find((n) => n.label === note)?.content,
+          requestId,
         }));
       } catch (cause) {
         report({ kind: "failed", title, status: `요청 실패: ${messageOf(cause)}`, answer: null, note });
         return;
+      } finally {
+        stopFollowing();
       }
 
       const failed = (status: string): Message => ({ kind: "failed", title, status, answer, note });
@@ -1616,6 +1627,8 @@ export function NoteDetail({
   // answer that could not be stored.
   const showsNote = message.note !== undefined && note !== undefined && message.kind !== "failed";
   const answer = showsNote ? note.content : message.answer;
+  // A follow-up being written shows below the footnote it will join.
+  const draft = showsNote && message.kind === "pending" ? message.answer : null;
   const memo = showsNote ? note.meta.memo : undefined;
   const content = useRef<View>(null);
   const actions = useRef<View>(null);
@@ -1756,6 +1769,11 @@ export function NoteDetail({
           ) : (
             <Markdown>{answer}</Markdown>
           )}
+          {draft ? (
+            <View style={styles.unit}>
+              <Markdown>{draft}</Markdown>
+            </View>
+          ) : null}
           {selection && showsNote && message.note !== undefined ? (
             <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
               {ASK_ACTIONS.map((action) => (

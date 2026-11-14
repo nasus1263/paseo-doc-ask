@@ -3,6 +3,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { explainRpc, resetRpc } from "../shared/explain";
 import { READ_TOOLS, runDeciding, type PermissionRequest, type PermissionResponse } from "./permissions";
 import { AgentPool } from "./pool";
+import { AnswerDraft, endAnswer, publishAnswer } from "./stream";
 
 type Paseo = PluginHandlerContext["paseo"];
 
@@ -71,8 +72,14 @@ async function ask(
   extraPrompt: string,
 ): Promise<{ value: { answer: string }; keep: boolean }> {
   const agent = paseo.agents.ref(agentId);
-  // A throw, such as for an archived or deleted agent, discards the agent.
-  const result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt), RUN_TIMEOUT_MS, readOnly);
+  const stopStreaming = input.requestId ? await streamAnswer(agent, input.requestId) : undefined;
+  let result;
+  try {
+    // A throw, such as for an archived or deleted agent, discards the agent.
+    result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt), RUN_TIMEOUT_MS, readOnly);
+  } finally {
+    stopStreaming?.();
+  }
   // The agent may hold a half-finished turn; the pool discards it.
   if (result.status !== "idle") throw new Error(describeFailure(result.status, result.error));
   const answer = result.lastMessage?.trim();
@@ -82,6 +89,27 @@ async function ask(
   const used = usage?.contextWindowUsedTokens ?? (usage?.inputTokens ?? 0) + (usage?.cachedInputTokens ?? 0);
   if (used >= ROTATE_AT_TOKENS) console.log(`Explainer ${agentId} reached ${used} context tokens; retiring it.`);
   return { value: { answer }, keep: used < ROTATE_AT_TOKENS };
+}
+
+/**
+ * Publishes the answer `agent` writes under `requestId` until the returned function is called.
+ * Without a live timeline the question still runs, only without a draft.
+ */
+async function streamAnswer(agent: ReturnType<Paseo["agents"]["ref"]>, requestId: string): Promise<() => void> {
+  const draft = new AnswerDraft();
+  const subscription = agent.timeline.subscribe((message) => {
+    const event = message.event;
+    if (event.type === "timeline" && draft.add(event.item)) publishAnswer(requestId, draft.text);
+  });
+  try {
+    await subscription.ready;
+  } catch (cause) {
+    console.error("Could not follow the explainer's answer:", cause);
+  }
+  return () => {
+    subscription();
+    endAnswer(requestId);
+  };
 }
 
 function poolFor(paseo: Paseo, workspaceId: string): AgentPool {

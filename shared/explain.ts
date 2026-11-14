@@ -1,4 +1,4 @@
-import { defineRpc, defineSettings } from "@getpaseo/plugin";
+import { defineRpc, defineSettings, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const askModeSchema = z.enum(["term", "question"]);
@@ -18,8 +18,17 @@ export const explainRpc = defineRpc({
     question: z.string().optional(),
     /** An earlier explanation the selection was taken from, when asking about a footnote. */
     context: z.string().optional(),
+    /** Names the request so `explainStream` can follow its answer while it is written. */
+    requestId: z.string().optional(),
   }),
   output: z.object({ answer: z.string() }),
+});
+
+/** The answer of an `explainRpc` request so far, sent again as it grows. */
+export const explainStream = defineSubscription({
+  name: "doc-ask.explain.stream",
+  input: z.object({ requestId: z.string() }),
+  event: z.object({ text: z.string() }),
 });
 
 /** Starts a fresh explainer session for the workspace by archiving the current one. */
