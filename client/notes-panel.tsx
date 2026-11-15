@@ -1,7 +1,8 @@
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Markdown } from "@getpaseo/plugin/client/ui";
+import { Icon, Markdown } from "@getpaseo/plugin/client/ui";
 import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import type { PressState } from "./controls";
 import { NoteDetail } from "./doc-ask-panel";
 import { useNotes } from "./notes-store";
 import type { Footnote } from "../shared/markdown";
@@ -15,38 +16,68 @@ const LIST_HEIGHT = 240;
  */
 export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   const notes = useNotes();
+  const pad = layout.compact ? 12 : 14;
   const styles = useMemo(
     () => ({
       screen: { flex: 1, minHeight: 0, backgroundColor: theme.colors.surface0 },
-      content: { padding: layout.compact ? 12 : 16, gap: 16 },
-      muted: { color: theme.colors.foregroundMuted },
-      document: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      empty: { padding: pad, gap: 8 },
+      muted: { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 19 },
+      /** A header bar like Paseo's panel headers: the document name over a bottom border. */
+      header: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 6,
+        paddingHorizontal: pad,
+        height: 36,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+      },
+      document: { flex: 1, minWidth: 0, color: theme.colors.foreground, fontSize: 13 },
       /** The footnote list keeps one height, scrolling inside, so the detail below stays put. */
       list: {
         height: LIST_HEIGHT,
         flexGrow: 0,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
       },
-      listContent: { padding: 8, gap: 4 },
-      ownHeading: { marginTop: 8 },
-      text: { color: theme.colors.foreground },
-      divider: { height: 1, backgroundColor: theme.colors.border },
-      heading: { color: theme.colors.foregroundMuted, fontWeight: "600" as const },
-      row: { flexDirection: "row" as const, gap: 8, paddingVertical: 4 },
-      rowActive: { backgroundColor: theme.colors.surface1, borderRadius: 6 },
-      number: { color: theme.colors.foregroundMuted, minWidth: 28 },
+      listContent: { paddingVertical: 4 },
+      section: {
+        flexDirection: "row" as const,
+        alignItems: "center" as const,
+        gap: 6,
+        paddingHorizontal: pad,
+        paddingTop: 8,
+        paddingBottom: 4,
+      },
+      sectionLabel: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "500" as const },
+      sectionCount: { color: theme.colors.foregroundMuted, fontSize: 12, opacity: 0.7 },
+      listEmpty: { color: theme.colors.foregroundMuted, fontSize: 13, paddingHorizontal: pad, paddingVertical: 6 },
+      text: { color: theme.colors.foreground, fontSize: 13 },
+      row: {
+        flexDirection: "row" as const,
+        alignItems: "flex-start" as const,
+        gap: 8,
+        paddingHorizontal: pad,
+        paddingVertical: 5,
+      },
+      number: {
+        color: theme.colors.foregroundMuted,
+        fontSize: 12,
+        minWidth: 18,
+        textAlign: "right" as const,
+        paddingTop: 2,
+      },
       body: { flex: 1, minWidth: 0, gap: 2 },
       memo: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      detail: { padding: pad },
     }),
-    [theme, layout.compact],
+    [theme, pad],
   );
 
   if (!notes || notes.workspaceId !== workspaceId) {
     return (
       <View style={styles.screen}>
-        <View style={styles.content}>
+        <View style={styles.empty}>
           <Text style={styles.muted}>
             문서 질문 패널로 연 문서나, AI 답변에 각주를 단 대화가 여기에 표시됩니다.
           </Text>
@@ -67,19 +98,23 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
     const [title = "", ...rest] = note.content.split("\n");
     // An instruction shows no number in the answer: list it by its text, then its passage.
     const instruction = chat && note.meta.comment;
+    const active = note.label === message?.note;
     return (
       <Pressable
         key={note.label}
         accessibilityRole="button"
         accessibilityLabel={instruction ? "지시로 이동" : `각주 ${note.number}로 이동`}
-        style={[styles.row, note.label === message?.note ? styles.rowActive : null]}
+        style={({ pressed, hovered }: PressState) => [
+          styles.row,
+          {
+            backgroundColor:
+              active || pressed ? theme.colors.surface2 : hovered ? theme.colors.surface1 : "transparent",
+          },
+        ]}
         // Clicking the open item again closes it.
         onPress={() => (note.label === message?.note ? actions.closeMessage() : actions.openNote(note.label))}
       >
-        <Text style={styles.number}>
-          {note.meta.bookmark ? "★" : ""}
-          {instruction ? "•" : `${note.number}.`}
-        </Text>
+        <Text style={styles.number}>{instruction ? "•" : note.number}</Text>
         <View style={styles.body}>
           {instruction ? (
             <>
@@ -99,34 +134,41 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
             </Text>
           ) : null}
         </View>
+        {note.meta.bookmark ? <Icon name="Star" size={13} color={theme.colors.statusWarning} /> : null}
       </Pressable>
     );
   };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.document} numberOfLines={1}>
-        {notes.name}
-      </Text>
+    <ScrollView style={styles.screen}>
+      <View style={styles.header}>
+        <Icon name={chat ? "MessageSquare" : "FileText"} size={14} color={theme.colors.foregroundMuted} />
+        <Text style={styles.document} numberOfLines={1}>
+          {notes.name}
+        </Text>
+      </View>
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
-        <Text style={styles.heading}>각주 {footnotes.length}개</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>각주</Text>
+          <Text style={styles.sectionCount}>{footnotes.length}개</Text>
+        </View>
         {footnotes.length === 0 ? (
-          <Text style={styles.muted}>아직 각주가 없습니다. 텍스트를 선택해 설명이나 질문을 요청하세요.</Text>
+          <Text style={styles.listEmpty}>아직 각주가 없습니다. 텍스트를 선택해 설명이나 질문을 요청하세요.</Text>
         ) : (
           footnotes.map(row)
         )}
         {own.length > 0 ? (
           <>
-            <Text style={[styles.heading, styles.ownHeading]}>
-              {ownLabel} {own.length}개
-            </Text>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>{ownLabel}</Text>
+              <Text style={styles.sectionCount}>{own.length}개</Text>
+            </View>
             {own.map(row)}
           </>
         ) : null}
       </ScrollView>
       {message ? (
-        <>
-          <View style={styles.divider} />
+        <View style={styles.detail}>
           <NoteDetail
             message={message}
             theme={theme}
@@ -136,7 +178,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
             onEditMemo={actions.editMemo}
             onDelete={actions.deleteNote}
           />
-        </>
+        </View>
       ) : null}
       {Dialogs ? <Dialogs theme={theme} /> : null}
     </ScrollView>

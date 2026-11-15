@@ -59,6 +59,7 @@ import {
 import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
+import { IconButton } from "./controls";
 import { followAnswer, newRequestId, openNotesPanel } from "./host";
 import {
   type Message,
@@ -1647,21 +1648,21 @@ export function NoteDetail({
 
   const styles = useMemo(
     () => ({
-      box: { gap: 8 },
-      header: { flexDirection: "row" as const, alignItems: "center" as const, flexWrap: "wrap" as const, gap: 12 },
+      box: { gap: 10 },
+      header: { flexDirection: "row" as const, alignItems: "center" as const, gap: 2 },
       status: {
-        flexGrow: 1,
-        fontWeight: "600" as const,
+        flex: 1,
+        minWidth: 0,
+        fontSize: 12,
+        fontWeight: "500" as const,
         color:
           message.kind === "failed"
             ? theme.colors.statusDanger
             : message.kind === "saved"
               ? theme.colors.statusSuccess
-              : theme.colors.foreground,
+              : theme.colors.foregroundMuted,
       },
-      quote: { color: theme.colors.foregroundMuted },
-      action: { color: theme.colors.accent },
-      danger: { color: theme.colors.statusDanger },
+      quote: { color: theme.colors.foregroundMuted, fontSize: 13 },
       actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
       button: {
         paddingHorizontal: 10,
@@ -1671,29 +1672,30 @@ export function NoteDetail({
       },
       buttonLabel: { color: theme.colors.accentForeground },
       memo: {
-        borderLeftWidth: 3,
-        borderLeftColor: theme.colors.accent,
+        borderLeftWidth: 2,
+        borderLeftColor: theme.colors.statusWarning,
         paddingLeft: 10,
-        paddingVertical: 4,
+        paddingVertical: 2,
         gap: 2,
       },
       memoLabel: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      memoText: { color: theme.colors.foreground },
-      units: { gap: 10 },
+      memoText: { color: theme.colors.foreground, fontSize: 13 },
+      units: { gap: 8 },
       unit: {
+        backgroundColor: theme.colors.surface1,
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+      },
+      followUp: {
+        color: theme.colors.foreground,
+        fontSize: 13,
+        backgroundColor: theme.colors.surface1,
         borderWidth: 1,
         borderColor: theme.colors.border,
         borderRadius: 8,
         paddingHorizontal: 10,
-        paddingVertical: 6,
-      },
-      followUp: {
-        color: theme.colors.foreground,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 6,
+        paddingVertical: 8,
       },
     }),
     [theme, message.kind],
@@ -1715,25 +1717,25 @@ export function NoteDetail({
         <Text style={styles.status}>{message.status}</Text>
         {showsNote ? (
           <>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={note.meta.bookmark ? "북마크 해제" : "북마크"}
+            <IconButton
+              icon="Star"
+              label={note.meta.bookmark ? "북마크 해제" : "북마크"}
+              theme={theme}
+              color={note.meta.bookmark ? theme.colors.statusWarning : undefined}
               onPress={() => onToggleBookmark(note.label)}
-            >
-              <Text style={styles.action}>{note.meta.bookmark ? "★ 북마크" : "☆ 북마크"}</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="메모 편집" onPress={() => onEditMemo(note.label)}>
-              <Text style={styles.action}>메모</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel="각주 삭제" onPress={() => onDelete(note.label)}>
-              <Text style={styles.danger}>삭제</Text>
-            </Pressable>
+            />
+            <IconButton icon="StickyNote" label="메모 편집" theme={theme} onPress={() => onEditMemo(note.label)} />
           </>
         ) : null}
-        {answer ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="내용 복사" onPress={copyAnswer}>
-            <Text style={styles.action}>복사</Text>
-          </Pressable>
+        {answer ? <IconButton icon="Copy" label="내용 복사" theme={theme} onPress={copyAnswer} /> : null}
+        {showsNote ? (
+          <IconButton
+            icon="Trash2"
+            label="각주 삭제"
+            theme={theme}
+            color={theme.colors.statusDanger}
+            onPress={() => onDelete(note.label)}
+          />
         ) : null}
       </View>
       {memo ? (
