@@ -1291,3 +1291,70 @@ export function mountVisualFrame(
     frame.remove();
   };
 }
+
+interface DomTip {
+  textContent: string | null;
+  style: Record<string, string>;
+  getBoundingClientRect(): DomRect;
+  remove(): void;
+}
+
+/** The one tooltip bubble, drawn on the page body so no panel or row can clip or cover it. */
+let tip: DomTip | null = null;
+
+/**
+ * Shows `label` in a bubble below `anchor`, lined up with its left or right edge and kept inside
+ * the window. A no-op off the web.
+ */
+export function showTooltip(
+  anchor: unknown,
+  label: string,
+  theme: PluginFilePanelProps["theme"],
+  align: "left" | "right",
+): void {
+  if (Platform.OS !== "web" || !anchor) return;
+  const doc = document as unknown as {
+    createElement(tag: "div"): DomTip;
+    body: { appendChild(child: unknown): void };
+    documentElement: { clientWidth: number; clientHeight: number };
+  };
+  if (!tip) {
+    tip = doc.createElement("div");
+    doc.body.appendChild(tip);
+  }
+  const c = theme.colors;
+  Object.assign(tip.style, {
+    position: "fixed",
+    zIndex: "2147483647",
+    pointerEvents: "none",
+    maxWidth: "260px",
+    padding: "4px 8px",
+    borderRadius: "6px",
+    border: `1px solid ${c.border}`,
+    background: c.surface2,
+    color: c.foreground,
+    font: '12px/16px system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif',
+    boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+    whiteSpace: "normal",
+    left: "0px",
+    top: "0px",
+    visibility: "hidden",
+    display: "block",
+  });
+  tip.textContent = label;
+  const box = (anchor as DomElement).getBoundingClientRect();
+  const own = tip.getBoundingClientRect();
+  const width = own.right - own.left;
+  const height = own.bottom - own.top;
+  const view = doc.documentElement;
+  let left = align === "right" ? box.right - width : box.left;
+  left = Math.max(4, Math.min(left, view.clientWidth - width - 4));
+  // Below the anchor, or above it when there is no room below.
+  let top = box.bottom + 4;
+  if (top + height > view.clientHeight - 4) top = box.top - height - 4;
+  Object.assign(tip.style, { left: `${left}px`, top: `${Math.max(4, top)}px`, visibility: "visible" });
+}
+
+export function hideTooltip(): void {
+  if (tip) tip.style.display = "none";
+}
