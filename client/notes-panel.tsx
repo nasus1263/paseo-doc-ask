@@ -1,7 +1,7 @@
 import { type PluginWorkspacePanelProps, useRpc, useSettings, useWorkspace } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
-import { useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type NativeScrollEvent, type NativeSyntheticEvent, Pressable, ScrollView, Text, View } from "react-native";
 import { IconButton, type PressState } from "./controls";
 import { NoteDetail, PromptModal } from "./doc-ask-panel";
 import { openBookmarksPanel } from "./host";
@@ -23,7 +23,19 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
   const pad = layout.compact ? 12 : 14;
   // Opening a note from the list puts the cursor in its follow-up field.
   const [focusRequest, setFocusRequest] = useState(0);
-  const detail = useRef<ScrollView>(null);
+  // Each document or agent tab keeps its own list and detail scroll positions.
+  const scrollKey = notes && notes.workspaceId === workspaceId ? `${workspaceId}
+${notes.path}` : null;
+  const list = useRememberedScroll(scrollKey && `${scrollKey}
+list`);
+  const detail = useRememberedScroll(scrollKey && `${scrollKey}
+detail`);
+  // A request's answer keeps its end in view while it is written and after it is saved, until
+  // the panel moves to another tab; coming back restores the remembered position instead.
+  const following = useRef(false);
+  useLayoutEffect(() => {
+    following.current = false;
+  }, [scrollKey]);
   const root = useWorkspace(workspaceId, (workspace) => workspace.directory);
   // A relative image path is read against the document's folder, then the workspace's.
   const documentPath = notes?.path.startsWith("agent:") ? null : (notes?.path ?? null);
@@ -177,7 +189,15 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         </Text>
         <PanelTools workspaceId={workspaceId} theme={theme} commit={notes.commit} />
       </View>
-      <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
+      <ScrollView
+        ref={list.ref}
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        nestedScrollEnabled
+        onScroll={list.onScroll}
+        scrollEventThrottle={100}
+        onContentSizeChange={list.onContentSizeChange}
+      >
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>각주</Text>
           <Text style={styles.sectionCount}>{footnotes.length}개</Text>
@@ -199,13 +219,16 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
       </ScrollView>
       {message ? (
         <ScrollView
-          ref={detail}
+          ref={detail.ref}
           style={styles.detailScroll}
           contentContainerStyle={styles.detail}
-          // A request's answer keeps its end in view: while it is written and once it is saved.
-          // A footnote opened from the list stays at its top.
+          onScroll={detail.onScroll}
+          scrollEventThrottle={100}
+          // A footnote opened from the list stays where it was scrolled.
           onContentSizeChange={() => {
-            if (message.kind !== "note") detail.current?.scrollToEnd({ animated: false });
+            if (detail.onContentSizeChange()) return;
+            following.current = message.kind === "pending" || (following.current && message.kind !== "note");
+            if (following.current) detail.ref.current?.scrollToEnd({ animated: false });
           }}
         >
           <NoteDetail
@@ -224,6 +247,45 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
       {Dialogs ? <Dialogs theme={theme} /> : null}
     </View>
   );
+}
+
+/** Scroll offsets of the panel's list and detail, by the tab they belong to. */
+const savedScroll = new Map<string, number>();
+/** How long after a tab switch a content resize may still move the view to the saved offset. */
+const RESTORE_WINDOW_MS = 300;
+
+/**
+ * Saves a ScrollView's offset under `key` and puts it back when `key` returns. While the view
+ * re-renders for another tab, the browser clamps the offset and reports scrolls; those are not
+ * saved until the restore lands.
+ */
+function useRememberedScroll(key: string | null) {
+  const ref = useRef<ScrollView>(null);
+  const restoring = useRef(false);
+  const restore = () => {
+    if (key) ref.current?.scrollTo({ y: savedScroll.get(key) ?? 0, animated: false });
+  };
+  useLayoutEffect(() => {
+    restoring.current = true;
+    restore();
+    const timer = setTimeout(() => {
+      restoring.current = false;
+    }, RESTORE_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [key]);
+  return {
+    ref,
+    onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (key && !restoring.current) savedScroll.set(key, event.nativeEvent.contentOffset.y);
+    },
+    /** Re-applies a pending restore once the content has laid out. True when it did. */
+    onContentSizeChange: (): boolean => {
+      if (!restoring.current) return false;
+      restoring.current = false;
+      restore();
+      return true;
+    },
+  };
 }
 
 /** A list row's title: the kind's icon and the subject, or the line as written. */
