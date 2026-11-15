@@ -1131,12 +1131,13 @@ export function installCommentSendHook(take: (agentId: string) => OutgoingCommen
 
   const attach = (input: ComposerNode) => {
     if (input.readOnly || input.disabled) return;
-    // Nothing typed means nothing is sent; slash commands never reach the agent.
-    if (!input.value.trim() || input.value.trimStart().startsWith("/")) return;
+    // Slash commands never reach the agent. An empty box sends the comments alone: the composer
+    // reads the box's live text on Enter, so the inserted block is what goes out.
+    if (input.value.trimStart().startsWith("/")) return;
     const agentId = agentIdAround(input);
     const outgoing = agentId ? take(agentId) : null;
     if (!outgoing) return;
-    const block = `\n\n${outgoing.text}`;
+    const block = input.value.trim() ? `\n\n${outgoing.text}` : outgoing.text;
     if (!insertIntoComposer(input, input.value.length, block)) return;
     setTimeout(() => {
       const at = input.value.lastIndexOf(block);
