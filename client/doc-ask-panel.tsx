@@ -38,6 +38,7 @@ import {
   removeFootnote,
   setNoteMeta,
   splitFollowUps,
+  splitTitle,
   type TextRange,
 } from "../shared/markdown";
 import {
@@ -60,6 +61,7 @@ import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import { IconButton } from "./controls";
+import { NoteTitle, TitledUnit } from "./note-title";
 import { RichMarkdown } from "./rich-markdown";
 import { followAnswer, newRequestId, openNotesPanel } from "./host";
 import {
@@ -977,7 +979,11 @@ export function FootnoteTooltip({
             메모: {note.meta.memo}
           </Text>
         ) : null}
-        <Markdown>{note.content}</Markdown>
+        {splitFollowUps(note.content).map((unit, i) => (
+          <TitledUnit key={i} unit={unit} theme={theme}>
+            {(body) => <Markdown>{body}</Markdown>}
+          </TitledUnit>
+        ))}
       </ScrollView>
     </Pressable>
   );
@@ -1012,7 +1018,11 @@ function FootnoteList({ notes, theme }: { notes: Footnote[]; theme: Theme }) {
             {note.number}.
           </Text>
           <View style={styles.body}>
-            <Markdown>{note.content}</Markdown>
+            {splitFollowUps(note.content).map((unit, i) => (
+              <TitledUnit key={i} unit={unit} theme={theme}>
+                {(body) => <Markdown>{body}</Markdown>}
+              </TitledUnit>
+            ))}
           </View>
         </View>
       ))}
@@ -1613,6 +1623,7 @@ export function NoteDetail({
   onEditMemo,
   onDelete,
   imageBases,
+  focusRequest,
 }: {
   message: Message;
   theme: Theme;
@@ -1624,6 +1635,8 @@ export function NoteDetail({
   onDelete: (label: string) => void;
   /** Folders a relative image path in the footnote is tried against, in order. */
   imageBases: readonly string[];
+  /** Changes whenever the follow-up field should take focus, such as on opening from the list. */
+  focusRequest?: number;
 }) {
   const toast = useToast();
   // A footnote shows its latest content, which accumulates follow-ups; a failed save shows the
@@ -1639,6 +1652,10 @@ export function NoteDetail({
   useEffect(() => (showsNote ? watchSelection(content.current, setSelection) : undefined), [showsNote]);
   useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
   const [followUp, setFollowUp] = useState("");
+  const followUpField = useRef<NativeTextInput>(null);
+  useEffect(() => {
+    if (focusRequest) followUpField.current?.focus();
+  }, [focusRequest]);
   useEffect(() => setFollowUp(""), [message.note]);
 
   /** Asks the typed question about the whole footnote, named by its title line. */
@@ -1666,7 +1683,6 @@ export function NoteDetail({
               ? theme.colors.statusSuccess
               : theme.colors.foregroundMuted,
       },
-      quote: { color: theme.colors.foregroundMuted, fontSize: 13 },
       actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
       button: {
         paddingHorizontal: 10,
@@ -1751,18 +1767,16 @@ export function NoteDetail({
         </View>
       ) : null}
       {/* A footnote starts with its own bold title. */}
-      {message.title && !showsNote ? (
-        <Text style={styles.quote} numberOfLines={2}>
-          {message.title}
-        </Text>
-      ) : null}
+      {message.title && !showsNote ? <RequestTitle title={message.title} theme={theme} /> : null}
       {answer ? (
         <View ref={content} style={styles.units}>
           {/* A footnote shows its original note and each follow-up as a unit of its own. */}
           {showsNote ? (
             splitFollowUps(answer).map((unit, i) => (
               <View key={i} style={styles.unit}>
-                <RichMarkdown text={unit} theme={theme} bases={imageBases} />
+                <TitledUnit unit={unit} theme={theme}>
+                  {(body) => <RichMarkdown text={body} theme={theme} bases={imageBases} />}
+                </TitledUnit>
               </View>
             ))
           ) : (
@@ -1795,6 +1809,7 @@ export function NoteDetail({
       ) : null}
       {showsNote ? (
         <TextInput
+          ref={followUpField}
           value={followUp}
           onChangeText={setFollowUp}
           onSubmitEditing={askFollowUp}
@@ -1860,4 +1875,17 @@ function writeFailure(cause: unknown): string {
   if (cause instanceof PluginFileConflictError) return "저장 실패: 답을 기다리는 동안 파일이 디스크에서 변경되었습니다.";
   if (cause instanceof PluginFileDeletedError) return "저장 실패: 파일이 삭제되었습니다.";
   return `저장 실패: ${messageOf(cause)}`;
+}
+
+/** A request's `kind: subject` title, as the side panel shows it while it runs or after it fails. */
+function RequestTitle({ title, theme }: { title: string; theme: Theme }) {
+  const titled = splitTitle(`**${title.replace(/\s+/g, " ").trim()}**`);
+  if (!titled) {
+    return (
+      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }} numberOfLines={2}>
+        {title}
+      </Text>
+    );
+  }
+  return <NoteTitle kind={titled.kind} subject={titled.subject} theme={theme} bold={false} lines={2} />;
 }

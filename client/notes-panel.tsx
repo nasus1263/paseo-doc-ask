@@ -1,12 +1,13 @@
 import { type PluginWorkspacePanelProps, useWorkspace } from "@getpaseo/plugin/client";
-import { Icon, Markdown } from "@getpaseo/plugin/client/ui";
-import { useMemo } from "react";
+import { Icon } from "@getpaseo/plugin/client/ui";
+import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PressState } from "./controls";
 import { NoteDetail } from "./doc-ask-panel";
+import { NoteTitle } from "./note-title";
 import { useNotes } from "./notes-store";
 import { directoryOf } from "../shared/links";
-import type { Footnote } from "../shared/markdown";
+import { type Footnote, splitTitle } from "../shared/markdown";
 
 /** Height of the footnote list: about eight one-line rows. */
 const LIST_HEIGHT = 240;
@@ -18,6 +19,8 @@ const LIST_HEIGHT = 240;
 export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   const notes = useNotes();
   const pad = layout.compact ? 12 : 14;
+  // Opening a note from the list puts the cursor in its follow-up field.
+  const [focusRequest, setFocusRequest] = useState(0);
   const root = useWorkspace(workspaceId, (workspace) => workspace.directory);
   // A relative image path is read against the document's folder, then the workspace's.
   const documentPath = notes?.path.startsWith("agent:") ? null : (notes?.path ?? null);
@@ -120,7 +123,11 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
           },
         ]}
         // Clicking the open item again closes it.
-        onPress={() => (note.label === message?.note ? actions.closeMessage() : actions.openNote(note.label))}
+        onPress={() => {
+          if (active) return actions.closeMessage();
+          actions.openNote(note.label);
+          setFocusRequest((n) => n + 1);
+        }}
       >
         <Text style={styles.number}>{instruction ? "•" : note.number}</Text>
         <View style={styles.body}>
@@ -134,7 +141,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
               </Text>
             </>
           ) : (
-            <Markdown>{title}</Markdown>
+            <ListTitle title={title} theme={theme} />
           )}
           {note.meta.memo ? (
             <Text style={styles.memo} numberOfLines={2}>
@@ -186,10 +193,24 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
             onEditMemo={actions.editMemo}
             onDelete={actions.deleteNote}
             imageBases={imageBases}
+            focusRequest={focusRequest}
           />
         </View>
       ) : null}
       {Dialogs ? <Dialogs theme={theme} /> : null}
     </ScrollView>
   );
+}
+
+/** A list row's title: the kind's icon and the subject, or the line as written. */
+function ListTitle({ title, theme }: { title: string; theme: PluginWorkspacePanelProps["theme"] }) {
+  const titled = splitTitle(title);
+  if (!titled) {
+    return (
+      <Text style={{ color: theme.colors.foreground, fontSize: 13 }} numberOfLines={2}>
+        {title.replace(/\*\*/g, "")}
+      </Text>
+    );
+  }
+  return <NoteTitle kind={titled.kind} subject={titled.subject} theme={theme} bold={false} lines={2} />;
 }

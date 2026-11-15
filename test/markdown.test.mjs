@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   annotate,
   appendToFootnote,
+  splitTitle,
   commentPathOf,
   definesFootnote,
   buildFootnote,
@@ -269,4 +270,11 @@ test("a document comment on free text is highlighted and marked as a comment", (
   const result = annotate("hello world\n", "", { from: 6, to: 11 }, "주석", "world", "좋다", { comment: true });
   assert.equal(result.doc, "hello ==world==[^1]\n");
   assert.match(result.comments, /^\[\^1\]: \*\*주석: world\*\* <!-- doc-ask \{"comment":true\} -->/);
+});
+
+test("splitTitle separates a unit's kind and subject from its body", () => {
+  assert.deepEqual(splitTitle("**설명: 낙하**\n\n본문"), { kind: "설명", subject: "낙하", body: "본문" });
+  assert.deepEqual(splitTitle("**지시: a: b**"), { kind: "지시", subject: "a: b", body: "" });
+  assert.equal(splitTitle("**메모: x**\n\n본문"), null);
+  assert.equal(splitTitle("본문만"), null);
 });

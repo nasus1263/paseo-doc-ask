@@ -707,3 +707,24 @@ export function prepareFootnotes(
   }));
   return { body, notes, marks };
 }
+
+/** What a footnote unit is: an AI explanation or answer, or the reader's own comment. */
+export type NoteKind = "설명" | "질문" | "주석" | "지시";
+
+const TITLE_LINE = /^\*\*(설명|질문|주석|지시): ([\s\S]*)\*\*\s*$/;
+
+/**
+ * A footnote unit's bold `kind: subject` title line split from its body, so the kind can be
+ * shown as an icon. Null when the unit does not start with such a title.
+ */
+export function splitTitle(unit: string): { kind: NoteKind; subject: string; body: string } | null {
+  const newline = unit.indexOf("\n");
+  const first = newline === -1 ? unit : unit.slice(0, newline);
+  const match = TITLE_LINE.exec(first.trim());
+  if (!match) return null;
+  return {
+    kind: match[1] as NoteKind,
+    subject: match[2]!.trim(),
+    body: newline === -1 ? "" : unit.slice(newline + 1).replace(/^\s*\n/, ""),
+  };
+}
