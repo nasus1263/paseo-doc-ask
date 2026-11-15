@@ -73,7 +73,8 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         accessibilityRole="button"
         accessibilityLabel={instruction ? "지시로 이동" : `각주 ${note.number}로 이동`}
         style={[styles.row, note.label === message?.note ? styles.rowActive : null]}
-        onPress={() => actions.openNote(note.label)}
+        // Clicking the open item again closes it.
+        onPress={() => (note.label === message?.note ? actions.closeMessage() : actions.openNote(note.label))}
       >
         <Text style={styles.number}>
           {note.meta.bookmark ? "★" : ""}
@@ -134,7 +135,6 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
             onToggleBookmark={actions.toggleBookmark}
             onEditMemo={actions.editMemo}
             onDelete={actions.deleteNote}
-            onClose={actions.closeMessage}
           />
         </>
       ) : null}

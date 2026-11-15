@@ -1610,7 +1610,6 @@ export function NoteDetail({
   onToggleBookmark,
   onEditMemo,
   onDelete,
-  onClose,
 }: {
   message: Message;
   theme: Theme;
@@ -1620,7 +1619,6 @@ export function NoteDetail({
   onToggleBookmark: (label: string) => void;
   onEditMemo: (label: string) => void;
   onDelete: (label: string) => void;
-  onClose: () => void;
 }) {
   const toast = useToast();
   // A footnote shows its latest content, which accumulates follow-ups; a failed save shows the
@@ -1735,11 +1733,6 @@ export function NoteDetail({
         {answer ? (
           <Pressable accessibilityRole="button" accessibilityLabel="내용 복사" onPress={copyAnswer}>
             <Text style={styles.action}>복사</Text>
-          </Pressable>
-        ) : null}
-        {message.kind !== "pending" ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="닫기" onPress={onClose}>
-            <Text style={styles.action}>닫기</Text>
           </Pressable>
         ) : null}
       </View>
