@@ -1,13 +1,51 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { CHAT_MESSAGE_KIND, ChatMessage, chatMessageSchema } from "./client/chat-message";
-import { existingChatController } from "./client/chat-controller";
-import { chatAnnotationsEnabled, includeCommentsEnabled, initChatAnnotations, setChatAnnotations } from "./client/chat-toggle";
+import { existingChatController, onChatChange } from "./client/chat-controller";
+import {
+  chatAnnotationsEnabled,
+  includeCommentsEnabled,
+  initChatAnnotations,
+  onChatSettingsChange,
+  setChatAnnotations,
+} from "./client/chat-toggle";
 import { installCommentPills } from "./client/comment-pill";
 import { BookmarksPanel } from "./client/bookmarks-panel";
 import { DocAskPanel } from "./client/doc-ask-panel";
 import { BOOKMARKS_PANEL_ID, NOTES_PANEL_ID, setPluginClient } from "./client/host";
 import { NotesPanel } from "./client/notes-panel";
 import { installCommentSendHook } from "./client/web";
+
+/**
+ * Instructions (the reader's comments) exist only on answers this plugin draws, so they go out
+ * only while it draws them. Returns the cleanup.
+ */
+function installSendHook(): () => void {
+  const pendingFor = (agentId: string) => {
+    if (!chatAnnotationsEnabled() || !includeCommentsEnabled()) return null;
+    const controller = existingChatController(agentId);
+    const pending = controller?.outgoingComments();
+    return controller && pending ? { controller, pending } : null;
+  };
+  const hook = installCommentSendHook(
+    (agentId) => {
+      const found = pendingFor(agentId);
+      if (!found) return null;
+      const { controller, pending } = found;
+      return {
+        text: `[이전 답변에 대한 사용자 지시] 각 소제목은 그 답변이 몇 턴 전 답변인지(직전 답변 = 1턴 전)이고, 그 아래 각 인용(>)은 그 답변의 구절, 그 아래가 그 구절에 대한 지시다.\n\n${pending.block}`,
+        onSent: () => void controller.markCommentsSent(pending.labels),
+      };
+    },
+    (agentId) => pendingFor(agentId) !== null,
+  );
+  const stopChats = onChatChange(hook.refresh);
+  const stopSettings = onChatSettingsChange(hook.refresh);
+  return () => {
+    stopChats();
+    stopSettings();
+    hook.dispose();
+  };
+}
 
 export default function contribute(client: PluginClientContext) {
   setPluginClient(client);
@@ -55,16 +93,7 @@ export default function contribute(client: PluginClientContext) {
     installCommentPills(client),
     // Instructions (the reader's comments) exist only on answers this plugin draws, so they go
     // out only while it draws them.
-    installCommentSendHook((agentId) => {
-      if (!chatAnnotationsEnabled() || !includeCommentsEnabled()) return null;
-      const controller = existingChatController(agentId);
-      const pending = controller?.outgoingComments();
-      if (!controller || !pending) return null;
-      return {
-        text: `[이전 답변에 대한 사용자 지시] 각 소제목은 그 답변이 몇 턴 전 답변인지(직전 답변 = 1턴 전)이고, 그 아래 각 인용(>)은 그 답변의 구절, 그 아래가 그 구절에 대한 지시다.\n\n${pending.block}`,
-        onSent: () => void controller.markCommentsSent(pending.labels),
-      };
-    }),
+    installSendHook(),
     client.addCommandCenterItem({
       id: "toggle-chat-notes",
       title: "대화 주석 켜기/끄기",

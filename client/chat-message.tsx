@@ -14,6 +14,7 @@ import {
   elementSize,
   type FootnoteHover,
   type PreviewDecorations,
+  setSendDiscColors,
   watchShown,
 } from "./web";
 
@@ -97,6 +98,11 @@ export function ChatMessage({
     decorations.current?.setMarks(marks);
   }, [marks]);
   useEffect(() => controller.noteAnswer(key, text), [controller, key, text]);
+  // The composer's send disc is drawn outside React; it takes the theme from here.
+  useEffect(
+    () => setSendDiscColors(theme.colors.accent, theme.colors.accentForeground),
+    [theme.colors.accent, theme.colors.accentForeground],
+  );
   useEffect(
     () => controller.registerRevealer(key, (number) => void decorations.current?.reveal(number)),
     [controller, key],

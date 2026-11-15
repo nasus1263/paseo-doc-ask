@@ -1090,6 +1090,8 @@ const PANE = '[data-testid^="workspace-pane-"]';
 /** React's per-node fiber property; the composer sits inside components with an `agentId` prop. */
 const REACT_FIBER_PREFIX = "__reactFiber$";
 const FIBER_DEPTH = 120;
+/** How far up from a button `PrimaryAction` may sit: Pressable, tooltip and button wrappers. */
+const PRIMARY_ACTION_DEPTH = 40;
 
 interface ComposerNode {
   nodeType: number;
@@ -1108,11 +1110,37 @@ interface ComposerNode {
   focus(options?: { preventScroll?: boolean }): void;
   setSelectionRange(start: number, end: number): void;
   dispatchEvent(event: unknown): boolean;
+  click(): void;
+  remove(): void;
+  insertBefore(node: unknown, before: unknown): void;
+  getBoundingClientRect(): DomRect;
+  style: Record<string, string>;
 }
 interface ComposerDocument {
   execCommand(command: "insertText" | "delete", showUi: boolean, value?: string): boolean;
+  createElement(tag: "div"): ComposerNode & DomEvents & { innerHTML: string; title: string; setAttribute(name: string, value: string): void };
+  querySelectorAll(selector: string): ArrayLike<ComposerNode>;
+  body: unknown;
 }
 declare const Event: new (type: string, init?: { bubbles?: boolean }) => unknown;
+
+/** The composer's buttons, Paseo's own; the plugin's send disc is left out. */
+const SEND_DISC_ATTR = "data-doc-ask-send";
+const COMPOSER_BUTTONS = `button:not([${SEND_DISC_ATTR}]), [role="button"]:not([${SEND_DISC_ATTR}])`;
+/** The composer's trailing action while the box is empty: Paseo's voice mode or stop button. */
+const STANDS_IN_FOR_SEND = new Set(["voiceMode", "active"]);
+/** How long after pressing send the box is checked for the comments having gone out. */
+const SENT_CHECK_MS = 300;
+const ARROW_UP_SVG =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
+
+/** Colors of the send disc, from the app theme once a plugin row has seen it. */
+let discColors = { background: "#2f7d4f", foreground: "#ffffff" };
+
+/** Gives the send disc the theme's accent colors. */
+export function setSendDiscColors(background: string, foreground: string): void {
+  discColors = { background, foreground };
+}
 
 /** Comments ready to go with a message, and what to do once the message went out. */
 export interface OutgoingComments {
@@ -1125,26 +1153,141 @@ export interface OutgoingComments {
  * button), appends what `take` returns for that agent to the message box just before the
  * composer reads it. One task later an emptied box means the message went out; text still in
  * place means the key did something else, and the block is taken back out.
+ *
+ * Paseo shows no send button while the box is empty, so while `waiting(agentId)` holds, an
+ * empty composer gets a send disc in place of its voice mode or stop button. Pressing it puts
+ * the comments in the box and presses the send button Paseo then draws. `refresh` redraws the
+ * discs after the comments or settings change.
  */
-export function installCommentSendHook(take: (agentId: string) => OutgoingComments | null): () => void {
-  if (Platform.OS !== "web") return () => {};
+export function installCommentSendHook(
+  take: (agentId: string) => OutgoingComments | null,
+  waiting: (agentId: string) => boolean,
+): { refresh(): void; dispose(): void } {
+  if (Platform.OS !== "web") return { refresh() {}, dispose() {} };
+  const dom = document as unknown as ComposerDocument;
+  /** Set while the plugin presses Paseo's send button itself, so the comments go in only once. */
+  let pressing = false;
+
+  /** Appends the comments to the box. Returns the check that runs once the message went out. */
+  const append = (input: ComposerNode, outgoing: OutgoingComments): (() => boolean) | null => {
+    const block = input.value.trim() ? `\n\n${outgoing.text}` : outgoing.text;
+    if (!insertIntoComposer(input, input.value.length, block)) return null;
+    // The block gone means the message took it; still there, the press did something else.
+    return () => {
+      const at = input.value.lastIndexOf(block);
+      if (at < 0) {
+        outgoing.onSent();
+        return true;
+      }
+      deleteFromComposer(input, at, at + block.length);
+      return false;
+    };
+  };
 
   const attach = (input: ComposerNode) => {
-    if (input.readOnly || input.disabled) return;
+    if (pressing || input.readOnly || input.disabled) return;
     // Slash commands never reach the agent. An empty box sends the comments alone: the composer
     // reads the box's live text on Enter, so the inserted block is what goes out.
     if (input.value.trimStart().startsWith("/")) return;
     const agentId = agentIdAround(input);
     const outgoing = agentId ? take(agentId) : null;
-    if (!outgoing) return;
-    const block = input.value.trim() ? `\n\n${outgoing.text}` : outgoing.text;
-    if (!insertIntoComposer(input, input.value.length, block)) return;
-    setTimeout(() => {
-      const at = input.value.lastIndexOf(block);
-      if (at >= 0) deleteFromComposer(input, at, at + block.length);
-      else outgoing.onSent();
-    }, 0);
+    const check = outgoing ? append(input, outgoing) : null;
+    if (check) setTimeout(check, 0);
   };
+
+  /** The send disc: puts the comments in the empty box, then presses Paseo's send button. */
+  const sendFromEmpty = (root: ComposerNode) => {
+    const input = root.querySelector(COMPOSER_INPUT);
+    if (!input || input.readOnly || input.disabled || input.value.trim()) return;
+    const agentId = agentIdAround(input);
+    const outgoing = agentId ? take(agentId) : null;
+    const check = outgoing ? append(input, outgoing) : null;
+    if (!check) return;
+    // Two frames: React draws the send button once the box holds text.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const buttons = root.querySelectorAll(COMPOSER_BUTTONS);
+        const send = buttons[buttons.length - 1];
+        pressing = true;
+        try {
+          if (send && !send.disabled) send.click();
+        } finally {
+          pressing = false;
+        }
+        setTimeout(check, SENT_CHECK_MS);
+      }),
+    );
+  };
+
+  /** Shows or removes the send disc of every agent composer on screen. */
+  const hidden = new Set<ComposerNode>();
+  const refresh = () => {
+    const roots = dom.querySelectorAll(COMPOSER_ROOT);
+    const keep = new Set<ComposerNode>();
+    for (let i = 0; i < roots.length; i++) {
+      const root = roots[i];
+      const disc = root.querySelector(`[${SEND_DISC_ATTR}]`);
+      const input = root.querySelector(COMPOSER_INPUT);
+      const agentId = input ? agentIdAround(input) : null;
+      const wanted = input && !input.readOnly && !input.disabled && !input.value.trim() && agentId && waiting(agentId);
+      const buttons = root.querySelectorAll(COMPOSER_BUTTONS);
+      const trailing = buttons.length > 0 ? buttons[buttons.length - 1] : null;
+      if (!wanted || !trailing?.parentElement) {
+        disc?.remove();
+        continue;
+      }
+      const standsIn = STANDS_IN_FOR_SEND.has(primaryActionKind(trailing) ?? "");
+      if (standsIn) {
+        if (trailing.style.display !== "none") trailing.style.display = "none";
+        hidden.add(trailing);
+        keep.add(trailing);
+      }
+      if (disc) continue;
+      const created = dom.createElement("div");
+      created.setAttribute(SEND_DISC_ATTR, "");
+      created.setAttribute("role", "button");
+      created.title = "지시 보내기";
+      created.innerHTML = ARROW_UP_SVG;
+      const size = standsIn ? Math.round(trailing.getBoundingClientRect().bottom - trailing.getBoundingClientRect().top) : 0;
+      Object.assign(created.style, {
+        width: `${size || 32}px`,
+        height: `${size || 32}px`,
+        borderRadius: "9999px",
+        background: discColors.background,
+        color: discColors.foreground,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        flexShrink: "0",
+      });
+      created.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation?.();
+        sendFromEmpty(root);
+      });
+      // In the trailing action's place; with none, after the last button.
+      trailing.parentElement.insertBefore(created, standsIn ? trailing : Reflect.get(trailing, "nextSibling"));
+    }
+    // Give back the buttons no disc stands in for any longer.
+    for (const button of hidden) {
+      if (keep.has(button)) continue;
+      button.style.display = "";
+      hidden.delete(button);
+    }
+  };
+
+  let frame: number | null = null;
+  const scheduleRefresh = () => {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      refresh();
+    });
+  };
+  // Composers mount, switch agents and redraw their buttons without telling the plugin.
+  const observer = new MutationObserver(scheduleRefresh);
+  observer.observe(dom.body, { childList: true, subtree: true });
 
   const onKeyDown: DomListener = (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.altKey || event.isComposing) return;
@@ -1158,18 +1301,35 @@ export function installCommentSendHook(take: (agentId: string) => OutgoingCommen
     const element = node?.nodeType === 1 ? node : node?.parentElement;
     const pressed = element?.closest('button, [role="button"]');
     const root = pressed?.closest(COMPOSER_ROOT);
-    if (!pressed || !root || pressed.disabled) return;
-    const buttons = root.querySelectorAll('button, [role="button"]');
+    if (!pressed || !root || pressed.disabled || pressed.getAttribute(SEND_DISC_ATTR) !== null) return;
+    const buttons = root.querySelectorAll(COMPOSER_BUTTONS);
     if (buttons[buttons.length - 1] !== pressed) return;
     const input = root.querySelector(COMPOSER_INPUT);
     if (input) attach(input);
   };
 
+  const onInput: DomListener = (event) => {
+    const target = event.target as ComposerNode | undefined;
+    if (target?.nodeType === 1 && target.matches(COMPOSER_INPUT)) scheduleRefresh();
+  };
+
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("click", onClick, true);
-  return () => {
-    document.removeEventListener("keydown", onKeyDown, true);
-    document.removeEventListener("click", onClick, true);
+  document.addEventListener("input", onInput, true);
+  scheduleRefresh();
+  return {
+    refresh: scheduleRefresh,
+    dispose() {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("input", onInput, true);
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+      const discs = dom.querySelectorAll(`[${SEND_DISC_ATTR}]`);
+      for (let i = 0; i < discs.length; i++) discs[i].remove();
+      for (const button of hidden) button.style.display = "";
+      hidden.clear();
+    },
   };
 }
 
@@ -1187,6 +1347,24 @@ function agentIdAround(element: ComposerNode): string | null {
   }
   const tab = element.closest(PANE)?.querySelector(ACTIVE_AGENT_TAB)?.getAttribute("data-testid");
   return tab?.startsWith(AGENT_TAB_PREFIX) ? tab.slice(AGENT_TAB_PREFIX.length) || null : null;
+}
+
+/**
+ * Which trailing action a composer button is, from the props of Paseo's `PrimaryAction` above it:
+ * "send", "active" (stop), "voiceMode" or "none". Null for any other button.
+ */
+function primaryActionKind(element: ComposerNode): string | null {
+  const key = Object.keys(element).find((name) => name.startsWith(REACT_FIBER_PREFIX));
+  let fiber: unknown = key ? Reflect.get(element, key) : null;
+  for (let depth = 0; depth < PRIMARY_ACTION_DEPTH && fiber && typeof fiber === "object"; depth += 1) {
+    const props: unknown = Reflect.get(fiber, "memoizedProps");
+    if (props && typeof props === "object" && "activeActionContent" in props && "kind" in props) {
+      const { kind } = props as { kind: unknown };
+      return typeof kind === "string" ? kind : null;
+    }
+    fiber = Reflect.get(fiber, "return");
+  }
+  return null;
 }
 
 /** Inserts `text` at `at` through the browser's editing path, so the composer sees a real edit. */
