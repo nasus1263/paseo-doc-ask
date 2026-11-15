@@ -1131,6 +1131,8 @@ const COMPOSER_BUTTONS = `button:not([${SEND_DISC_ATTR}]), [role="button"]:not([
 const STANDS_IN_FOR_SEND = new Set(["voiceMode", "active"]);
 /** How long after pressing send the box is checked for the comments having gone out. */
 const SENT_CHECK_MS = 300;
+/** The disc size when no Paseo button shows the real one. */
+const DEFAULT_DISC_SIZE = 28;
 const ARROW_UP_SVG =
   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
 
@@ -1247,14 +1249,20 @@ export function installCommentSendHook(
       created.setAttribute(SEND_DISC_ATTR, "");
       created.setAttribute("role", "button");
       created.title = "지시 보내기";
-      created.innerHTML = ARROW_UP_SVG;
-      const size = standsIn ? Math.round(trailing.getBoundingClientRect().bottom - trailing.getBoundingClientRect().top) : 0;
+      // Paseo's button is a press area around a smaller disc: take the area's box and the disc's size.
+      const height = (node: ComposerNode | null) =>
+        node ? Math.round(node.getBoundingClientRect().bottom - node.getBoundingClientRect().top) : 0;
+      const width = (node: ComposerNode | null) =>
+        node ? Math.round(node.getBoundingClientRect().right - node.getBoundingClientRect().left) : 0;
+      const inner = standsIn ? (Reflect.get(trailing, "firstElementChild") as ComposerNode | null) : null;
+      const area = { width: standsIn ? width(trailing) : 0, height: standsIn ? height(trailing) : 0 };
+      const size = height(inner) || area.height || DEFAULT_DISC_SIZE;
+      created.innerHTML =
+        `<div style="width:${size}px;height:${size}px;border-radius:9999px;background:${discColors.background};` +
+        `color:${discColors.foreground};display:flex;align-items:center;justify-content:center">${ARROW_UP_SVG}</div>`;
       Object.assign(created.style, {
-        width: `${size || 32}px`,
-        height: `${size || 32}px`,
-        borderRadius: "9999px",
-        background: discColors.background,
-        color: discColors.foreground,
+        minWidth: `${area.width || size}px`,
+        height: `${area.height || size}px`,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
