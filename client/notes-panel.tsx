@@ -143,7 +143,15 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
               </Text>
             </>
           ) : (
-            <ListTitle title={title} theme={theme} />
+            <>
+              <ListTitle title={title} theme={theme} />
+              {note.passage ? (
+                // The dragged passage, lined up with the title text after its kind icon.
+                <Text style={[styles.memo, { marginLeft: 20 }]} numberOfLines={1} ellipsizeMode="tail">
+                  {note.passage}
+                </Text>
+              ) : null}
+            </>
           )}
           {note.meta.memo ? (
             <Text style={styles.memo} numberOfLines={2}>

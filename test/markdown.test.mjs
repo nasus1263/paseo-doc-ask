@@ -177,7 +177,13 @@ test("prepareFootnotes wraps highlights in sentinels and links them to their foo
     { text: "a = b", number: null },
     { text: "`code`", number: null },
   ]);
-  assert.deepEqual(notes, [{ label: "1", number: 1, content: "note", meta: {} }]);
+  // The highlight names the passage of its footnote.
+  assert.deepEqual(notes, [{ label: "1", number: 1, content: "note", meta: {}, passage: "멱등성" }]);
+});
+
+test("a footnote's passage is its highlight as plain text, or the anchor quote on an agent answer", () => {
+  assert.equal(prepareFootnotes("==**굵게** `x`==[^1]", "[^1]: n").notes[0].passage, "굵게 x");
+  assert.equal(prepareFootnotes("참조만[^1]", "[^1]: n").notes[0].passage, undefined);
 });
 
 test("prepareFootnotes shows older highlights written inside code or emphasis outside it", () => {

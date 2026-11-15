@@ -24,6 +24,7 @@ test("annotateChat stores the anchor and chatMarks highlights only that message"
   assert.equal(first.id, "1");
   const [note] = chatNotes(first.comments);
   assert.deepEqual(note.meta.anchor, { message: "m1", quote: "멱등성", occurrence: 1 });
+  assert.equal(note.passage, "멱등성");
   assert.equal(note.content, "**설명: 멱등성**\n\n답");
 
   const { body, marks } = chatMarks(text, "m1", chatNotes(first.comments));

@@ -12,6 +12,7 @@ import {
   nextFootnoteLabel,
   prepareFootnotes,
   removeFootnote,
+  plainLine,
   setNoteMeta,
   superscript,
   type TextRange,
@@ -77,7 +78,11 @@ export function chatNotes(comments: string): Footnote[] {
     (a, b) => (Number(a.label) || 0) - (Number(b.label) || 0),
   );
   const ordered = [...byLabel.filter((note) => !note.meta.comment), ...byLabel.filter((note) => note.meta.comment)];
-  return ordered.map((note, index) => ({ ...note, number: index + 1 }));
+  return ordered.map((note, index) => ({
+    ...note,
+    number: index + 1,
+    ...(note.meta.anchor ? { passage: plainLine(note.meta.anchor.quote) } : {}),
+  }));
 }
 
 const NO_MARKS: Mark[] = [];

@@ -463,6 +463,13 @@ export interface Footnote {
   number: number;
   content: string;
   meta: NoteMeta;
+  /** The passage the footnote was asked about, as plain text, when known. */
+  passage?: string;
+}
+
+/** `markdown` reduced to one plain line: emphasis, code and highlight markers dropped. */
+export function plainLine(markdown: string): string {
+  return markdown.replace(/\*\*|__|==|`/g, "").replace(/\s+/g, " ").trim();
 }
 
 export function superscript(n: number): string {
@@ -712,12 +719,19 @@ export function prepareFootnotes(
   for (const label of definitions.keys()) {
     if (!numbers.has(label)) numbers.set(label, numbers.size + 1);
   }
-  const notes = [...numbers].map(([label, number]) => ({
-    label,
-    number,
-    content: definitions.get(label)?.content ?? "",
-    meta: definitions.get(label)?.meta ?? {},
-  }));
+  // A highlight names the passage its footnote is about.
+  const passages = new Map<number, string>();
+  for (const mark of marks) if (mark.number !== null && !passages.has(mark.number)) passages.set(mark.number, plainLine(mark.text));
+  const notes = [...numbers].map(([label, number]) => {
+    const passage = passages.get(number);
+    return {
+      label,
+      number,
+      content: definitions.get(label)?.content ?? "",
+      meta: definitions.get(label)?.meta ?? {},
+      ...(passage ? { passage } : {}),
+    };
+  });
   return { body, notes, marks };
 }
 
