@@ -243,6 +243,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
           mode,
           question,
           context: note === undefined ? undefined : notesRef.current.find((n) => n.label === note)?.content,
+          passage: note === undefined ? undefined : notesRef.current.find((n) => n.label === note)?.passage,
           requestId,
         }));
       } catch (cause) {

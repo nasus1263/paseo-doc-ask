@@ -19,9 +19,12 @@ const ROTATE_AT_TOKENS = 150_000;
 const MAX_AGENTS = 4;
 
 const SYSTEM_PROMPT = [
-  "너는 문서 해설자다. 사용자는 문서를 읽다가 선택한 부분을 설명해 달라고 하거나, 그 부분에 대해 질문한다.",
+  "너는 문서 해설자다. 사용자는 문서나 에이전트 답변을 읽다가 선택한 부분을 설명해 달라고 하거나, 그 부분에 대해 질문한다.",
   "규칙:",
+  "- 질문은 항상 선택한 부분에 관한 것이다. '절대경로', '위치', '예시', '왜'처럼 짧은 질문은 '선택한 부분의 절대경로', '선택한 부분은 어디에 있나'처럼 선택한 부분에 대해 묻는 것으로 해석한다. 선택한 부분과 무관한 용어 정의로 답하지 않는다.",
+  "- 각주에 대한 후속 질문의 '이것', '얘', '그거'는 그 각주가 달린 원래 구절(<passage>)을 가리킨다.",
   "- 파일을 수정하거나 명령을 실행하지 않는다. 문서는 메시지로 전달된다.",
+  "- 파일의 위치나 존재, 코드의 실제 내용처럼 확인할 수 있는 것을 물으면 Read, Grep, Glob 도구로 워크스페이스를 직접 찾아보고 답한다. 확인한 경로는 절대경로로 쓴다. 찾지 못했으면 찾아본 범위와 함께 못 찾았다고 말하고, 추정을 사실처럼 쓰지 않는다.",
   "- 제목, 인사, 서두 없이 답 본문만 Markdown으로 출력한다.",
   "- 기본은 2~6문장으로 짧게 쓴다. 필요하면 짧은 예시나 비유를 든다.",
   "- 문서와 같은 언어로 답한다.",
@@ -84,7 +87,8 @@ async function ask(
   let result;
   try {
     // A throw, such as for an archived or deleted agent, discards the agent.
-    result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt), RUN_TIMEOUT_MS, readOnly);
+    const directory = await workspaceDirectory(paseo, input.workspaceId);
+    result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt, directory), RUN_TIMEOUT_MS, readOnly);
   } finally {
     stopStreaming?.();
   }
@@ -173,15 +177,25 @@ async function createExplainer(paseo: Paseo, workspaceId: string): Promise<strin
   return agent.id;
 }
 
-function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraPrompt: string): string {
+function buildPrompt(
+  agentId: string,
+  input: RpcInput<typeof explainRpc>,
+  extraPrompt: string,
+  directory: string | null,
+): string {
   const known = seenDocs.get(agentId)?.get(input.path) === input.document;
   const parts: string[] = [];
+  // An agent answer is not a file: say what it is and where its workspace is.
+  const source = input.path.startsWith("agent:")
+    ? `Paseo 에이전트의 답변 하나${directory ? ` (그 에이전트의 작업 폴더: ${directory})` : ""}`
+    : `문서: ${input.path}`;
+  if (directory && !input.path.startsWith("agent:")) parts.push(`워크스페이스 폴더: ${directory}`);
   if (known) {
-    parts.push(`문서: ${input.path} (앞서 전달한 내용과 동일)`);
+    parts.push(`${source} (앞서 전달한 내용과 동일)`);
   } else if (input.document.length <= MAX_INLINE_CHARS) {
-    parts.push(`문서: ${input.path}`, "<document>", input.document, "</document>");
+    parts.push(source, "<document>", input.document, "</document>");
   } else {
-    parts.push(`문서: ${input.path} (길어서 생략됨. 필요하면 Read 도구로 읽어라)`);
+    parts.push(`${source} (길어서 생략됨. 필요하면 Read 도구로 읽어라)`);
   }
   const context = input.context?.trim();
   if (context) {
@@ -192,6 +206,8 @@ function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraP
       context,
       "</note>",
     );
+    const passage = input.passage?.trim();
+    if (passage) parts.push("이 각주가 달린 원래 구절:", "<passage>", passage, "</passage>");
   }
   parts.push("", "<selection>", input.selection, "</selection>");
   const question = input.question?.trim();
@@ -212,6 +228,17 @@ function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraP
   const extra = extraPrompt.trim();
   if (extra) parts.push("<instructions>", extra, "</instructions>");
   return parts.join("\n");
+}
+
+/** The workspace's folder, so the explainer knows where to look; null when unknown. */
+async function workspaceDirectory(paseo: Paseo, workspaceId: string): Promise<string | null> {
+  try {
+    const workspace = paseo.workspaces.ref(workspaceId);
+    await workspace.refresh();
+    return workspace.directory ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function rememberDoc(agentId: string, input: RpcInput<typeof explainRpc>) {

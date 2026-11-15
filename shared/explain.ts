@@ -19,6 +19,8 @@ export const explainRpc = defineRpc({
     question: z.string().optional(),
     /** An earlier explanation the selection was taken from, when asking about a footnote. */
     context: z.string().optional(),
+    /** The passage of the document or answer that footnote is about, when asking about one. */
+    passage: z.string().optional(),
     /** Names the request so `explainStream` can follow its answer while it is written. */
     requestId: z.string().optional(),
   }),

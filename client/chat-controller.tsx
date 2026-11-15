@@ -278,7 +278,8 @@ class ChatController {
   async askNote(labelOfNote: string, selected: string, mode: AskMode, question?: string, whole = false): Promise<void> {
     const label = MODE_LABEL[mode];
     const subject = mode === "question" && question ? question : selected;
-    const context = this.notes().find((n) => n.label === labelOfNote)?.content;
+    const footnote = this.notes().find((n) => n.label === labelOfNote);
+    const context = footnote?.content;
     await this.run(`${label}: ${subject}`, labelOfNote, async (deps, requestId) => {
       const { answer } = await deps.explain({
         workspaceId: deps.workspaceId ?? "",
@@ -288,6 +289,7 @@ class ChatController {
         mode,
         question,
         context,
+        passage: footnote?.passage,
         requestId,
       });
       const failure = await this.update(
