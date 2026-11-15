@@ -85,6 +85,7 @@ declare const document: DomEvents & {
   createRange(): DomRange;
   getSelection(): DomSelection | null;
   caretRangeFromPoint?(x: number, y: number): DomRange | null;
+  elementFromPoint(x: number, y: number): DomElement | null;
   createElement(tag: "style"): DomStyle;
   createTreeWalker(root: unknown, whatToShow: number): { nextNode(): DomText | null };
   head: { appendChild(child: unknown): void };
@@ -336,10 +337,20 @@ export function decoratePreview(
       if (mark.number === null) continue;
       const rects = mark.hoverRange.getClientRects();
       for (let i = 0; i < rects.length; i++) {
-        if (within(rects[i], x, y)) return { number: mark.number, rect: rects[i] };
+        if (within(rects[i], x, y) && !covered(mark.hoverRange, x, y)) return { number: mark.number, rect: rects[i] };
       }
     }
     return null;
+  };
+  /**
+   * Whether something drawn over the text, such as the selection box, is what the point is on.
+   * The highlight test is geometric, so it must ask the page what is actually on top there.
+   */
+  const covered = (range: DomRange, x: number, y: number): boolean => {
+    const top = document.elementFromPoint(x, y);
+    if (!top) return true;
+    const text = range.commonAncestorContainer as DomElement;
+    return !(top.contains(text) || text.contains?.(top));
   };
 
   const move: DomListener = (event) => {
