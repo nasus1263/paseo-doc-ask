@@ -108,7 +108,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         {notes.name}
       </Text>
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
-        <Text style={styles.heading}>각주 {footnotes.length}</Text>
+        <Text style={styles.heading}>각주 {footnotes.length}개</Text>
         {footnotes.length === 0 ? (
           <Text style={styles.muted}>아직 각주가 없습니다. 텍스트를 선택해 설명이나 질문을 요청하세요.</Text>
         ) : (
@@ -117,7 +117,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         {own.length > 0 ? (
           <>
             <Text style={[styles.heading, styles.ownHeading]}>
-              {ownLabel} {own.length}
+              {ownLabel} {own.length}개
             </Text>
             {own.map(row)}
           </>
