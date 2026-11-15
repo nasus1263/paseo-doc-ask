@@ -488,7 +488,7 @@ export interface Mark {
   number: number | null;
   /**
    * A reader's instruction on an agent answer: wrapped in `COMMENT_OPEN`/`COMMENT_CLOSE` and
-   * painted blue, with no superscript. `number` still names its footnote for hover and click.
+   * painted pink, with no superscript. `number` still names its footnote for hover and click.
    */
   comment?: boolean;
 }

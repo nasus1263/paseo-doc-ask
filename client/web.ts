@@ -108,7 +108,7 @@ const SHOW_TEXT = 4;
 const SUPERSCRIPT_DIGIT = /[⁰¹²³⁴⁵⁶⁷⁸⁹]/;
 const MARK_COLOR = "rgba(255, 212, 0, 0.38)";
 /** A reader's instruction on an agent answer. */
-const COMMENT_COLOR = "rgba(64, 150, 255, 0.32)";
+const COMMENT_COLOR = "rgba(255, 92, 168, 0.28)";
 const HOVER_SLACK = 3;
 
 interface HighlightRegistry {
@@ -545,7 +545,7 @@ interface LocatedMark {
   /** The text plus its superscript reference: one hover target for the footnote. */
   hoverRange: DomRange;
   number: number | null;
-  /** A reader's instruction, painted blue and followed by no reference. */
+  /** A reader's instruction, painted pink and followed by no reference. */
   comment: boolean;
 }
 

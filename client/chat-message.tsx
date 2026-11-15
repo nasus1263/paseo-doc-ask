@@ -32,7 +32,7 @@ export const chatMessageSchema = z.object({ text: z.string(), key: z.string() })
 
 /**
  * A completed assistant message drawn with Paseo's Markdown, plus footnotes: AI explanations as
- * yellow passages with superscript numbers, the reader's instructions as blue passages without
+ * yellow passages with superscript numbers, the reader's instructions as pink passages without
  * one. Hovering either shows it; clicking opens it in the side panel. Finishing a selection opens the
  * selection box (지시, 설명, 질문). 모든 지시 복사 copies the reader's comments with the
  * passages quoted.
