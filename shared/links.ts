@@ -21,7 +21,6 @@ export interface LinkToken {
 
 const resolutionSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("found"), path: z.string() }),
-  z.object({ status: z.literal("multiple"), paths: z.array(z.string()) }),
   z.object({ status: z.literal("missing") }),
 ]);
 export type Resolution = z.infer<typeof resolutionSchema>;
@@ -81,8 +80,7 @@ export function distinctPaths(tokens: LinkToken[]): string[] {
 
 /**
  * Points every resolved reference at the file found for it, as a workspace-relative link, the
- * form Paseo resolves in a plugin panel. A link with several matching files keeps its label
- * and lists each candidate after it, so the user picks one.
+ * form Paseo resolves in a plugin panel.
  */
 export function rewriteLinks(
   text: string,
@@ -93,19 +91,10 @@ export function rewriteLinks(
   let out = text;
   for (const token of [...tokens].reverse()) {
     const resolution = resolutions.get(token.target.path);
-    let replacement: string | null = null;
-    if (resolution?.status === "found") {
-      const href = fileHref({ ...token.target, path: resolution.path }, root);
-      const label = token.kind === "link" ? token.label : text.slice(token.start, token.end);
-      replacement = `[${label}](<${href}>)`;
-    } else if (resolution?.status === "multiple" && token.kind === "link") {
-      const choices = resolution.paths.map((path) => {
-        const shown = relativeTo(root, path) ?? path;
-        return `[\`${shown}\`](<${fileHref({ ...token.target, path }, root)}>)`;
-      });
-      replacement = `${token.label} (같은 이름의 파일 ${choices.length}개: ${choices.join(" · ")})`;
-    }
-    if (replacement !== null) out = `${out.slice(0, token.start)}${replacement}${out.slice(token.end)}`;
+    if (resolution?.status !== "found") continue;
+    const href = fileHref({ ...token.target, path: resolution.path }, root);
+    const label = token.kind === "link" ? token.label : text.slice(token.start, token.end);
+    out = `${out.slice(0, token.start)}[${label}](<${href}>)${out.slice(token.end)}`;
   }
   return out;
 }

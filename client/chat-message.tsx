@@ -1,4 +1,4 @@
-import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
+import { type PluginTimelineItemProps, useAgent, useWorkspace } from "@getpaseo/plugin/client";
 import { copyText, Markdown, useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -8,6 +8,7 @@ import { keptLength } from "../shared/markdown";
 import { type MessageSelection, useChatController } from "./chat-controller";
 import { FootnoteTooltip, QuestionModal } from "./doc-ask-panel";
 import { focusComposer } from "./host";
+import { useResolvedMarkdown } from "./links";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import {
   chatViewport,
@@ -46,6 +47,13 @@ export function ChatMessage({
   const toast = useToast();
   const { controller, notes } = useChatController(agentId);
   const { body, marks } = useMemo(() => chatMarks(text, key, notes), [key, notes, text]);
+  // File links point at the files they mean: as written from the agent's cwd, then under the
+  // workspace root, then by file name. The link text stays the same, so the marks still line up.
+  const cwd = useAgent(agentId, (agent) => agent.cwd) ?? "";
+  const workspaceId = useAgent(agentId, (agent) => agent.workspaceId);
+  const directory = useWorkspace(workspaceId ?? "", (workspace) => workspace?.directory ?? null);
+  const root = directory || cwd;
+  const linkedBody = useResolvedMarkdown(body, [cwd || root, root], root) ?? body;
   const comments = useMemo(() => copyComments(text, key, notes), [key, notes, text]);
   const content = useRef<View>(null);
   const decorations = useRef<PreviewDecorations | null>(null);
@@ -145,7 +153,7 @@ export function ChatMessage({
     // The tooltip sits outside `content` so its text is not searched, selected or decorated.
     <View>
       <View ref={content}>
-        <Markdown>{body}</Markdown>
+        <Markdown>{linkedBody}</Markdown>
         <View style={styles.footer}>
           <Pressable
             accessibilityRole="button"
