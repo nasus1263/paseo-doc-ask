@@ -634,7 +634,8 @@ export function listBookmarks(text: string): Bookmark[] {
 /**
  * Prepares Markdown for display: removes footnote definitions, replaces references with
  * superscript numbers (numbered by first reference), and unwraps `==highlights==`, wrapping each
- * in `MARK_OPEN`/`MARK_CLOSE`. Definitions come from the document and from `comments`, its
+ * in `MARK_OPEN`/`MARK_CLOSE`. A highlight's own reference is dropped from the body; the
+ * highlight stands for it. Definitions come from the document and from `comments`, its
  * comment file; the document's own win. Returns the body, the notes in number order
  * (unreferenced definitions last), and the highlights in document order. Fenced and inline code
  * are left alone.
@@ -682,8 +683,9 @@ export function prepareFootnotes(
               const n = linked ? numberOf(markLabel) : null;
               marks.push({ text: restore(marked.replace(INNER_REFERENCE, "")), number: n });
               const shown = MARK_OPEN + inner + MARK_CLOSE;
-              if (markRef === undefined) return shown;
-              return n === null ? shown + markRef : shown + superscript(n);
+              // A linked highlight shows no number: hovering or clicking it opens the footnote.
+              if (markRef === undefined || n !== null) return shown;
+              return shown + markRef;
             }
             if (label === undefined || !definitions.has(label)) return match;
             const adjacent = offset > 0 && masked.slice(0, offset).endsWith("]");

@@ -3,10 +3,9 @@ import { test } from "node:test";
 import { anchorAt, anchorRange, annotateChat, chatMarks, chatNotes, copyComments, messageKey, markSent, unsentComments } from "../shared/chat.ts";
 import { setNoteMeta } from "../shared/markdown.ts";
 
-test("messageKey prefers the id and hashes text otherwise", () => {
-  assert.equal(messageKey("m1", "x"), "m1");
-  assert.equal(messageKey(null, "같은 글"), messageKey(undefined, "같은 글"));
-  assert.notEqual(messageKey(null, "a"), messageKey(null, "b"));
+test("messageKey hashes the text, ignoring surrounding whitespace", () => {
+  assert.equal(messageKey("같은 글"), messageKey("\n같은 글\n"));
+  assert.notEqual(messageKey("a"), messageKey("b"));
 });
 
 test("anchors point at the nth occurrence of a passage", () => {
@@ -28,7 +27,7 @@ test("annotateChat stores the anchor and chatMarks highlights only that message"
   assert.equal(note.content, "**설명: 멱등성**\n\n답");
 
   const { body, marks } = chatMarks(text, "m1", chatNotes(first.comments));
-  assert.equal(body, "멱등성은 중요하다. ⁣멱등성⁤¹!");
+  assert.equal(body, "멱등성은 중요하다. ⁣멱등성⁤!");
   assert.deepEqual(marks, [{ text: "멱등성", number: 1 }]);
   assert.equal(chatMarks(text, "other", chatNotes(first.comments)).body, text);
 });
@@ -64,22 +63,22 @@ test("a comment keeps overlapping notes and both stay reachable", () => {
   const notes = chatNotes(commented.comments);
   assert.deepEqual(notes.map((n) => [n.label, n.meta.comment === true]), [["1", false], ["2", true]]);
   const { body, marks } = chatMarks(text, "m", notes);
-  // The explanation keeps its yellow highlight and number; the instruction is painted on its own,
+  // The explanation keeps its yellow highlight, without a number; the instruction is painted on its own,
   // overlapping it, with no number.
-  assert.equal(body, "⁡⁣멱등성⁤¹은 중요하다⁢.");
+  assert.equal(body, "⁡⁣멱등성⁤은 중요하다⁢.");
   assert.deepEqual(marks, [
     { text: "멱등성", number: 1 },
     { text: "멱등성은 중요하다", number: 2, comment: true },
   ]);
 });
 
-test("footnotes ending at the same place show comma-separated superscripts", () => {
+test("a highlight and an instruction ending at the same place add no number", () => {
   const text = "abc";
   let comments = annotateChat("", text, "m", { from: 0, to: 3 }, "설명", "abc", "A").comments;
   comments = annotateChat(comments, text, "m", { from: 1, to: 3 }, "설명", "bc", "B").comments;
   comments = annotateChat(comments, text, "m", { from: 2, to: 3 }, "지시", "c", "C", { comment: true }).comments;
   // "bc" replaced "abc" as footnote 1; the instruction ending at the same place adds no number.
-  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "a⁣b⁡c⁤¹⁢");
+  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "a⁣b⁡c⁤⁢");
 });
 
 test("explanations are numbered first and instructions after them", () => {
@@ -90,7 +89,7 @@ test("explanations are numbered first and instructions after them", () => {
     chatNotes(comments).map((n) => [n.label, n.number]),
     [["2", 1], ["1", 2]],
   );
-  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "⁡ab⁢c⁣de⁤¹f");
+  assert.equal(chatMarks(text, "m", chatNotes(comments)).body, "⁡ab⁢c⁣de⁤f");
 });
 
 test("copyComments quotes each commented passage in order, comments only", () => {

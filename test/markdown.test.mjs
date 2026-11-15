@@ -169,7 +169,7 @@ test("prepareFootnotes renders references as superscripts and collects notes", (
 test("prepareFootnotes wraps highlights in sentinels and links them to their footnotes", () => {
   const text = "A ==멱등성==[^1] and ==a = b== but `x == y` and ==`code`==.";
   const { body, marks, notes } = prepareFootnotes(text, "# 주석\n\n[^1]: note");
-  assert.equal(body, "A ⁣멱등성⁤¹ and ⁣a = b⁤ but `x == y` and ⁣`code`⁤.");
+  assert.equal(body, "A ⁣멱등성⁤ and ⁣a = b⁤ but `x == y` and ⁣`code`⁤.");
   assert.deepEqual(marks, [
     { text: "멱등성", number: 1 },
     { text: "a = b", number: null },
@@ -180,7 +180,7 @@ test("prepareFootnotes wraps highlights in sentinels and links them to their foo
 
 test("prepareFootnotes shows older highlights written inside code or emphasis outside it", () => {
   const { body } = prepareFootnotes("저장 `==Zones==` 목록, **==P3 = 최적==**[^1]", "[^1]: n");
-  assert.equal(body, "저장 ⁣`Zones`⁤ 목록, ⁣**P3 = 최적**⁤¹");
+  assert.equal(body, "저장 ⁣`Zones`⁤ 목록, ⁣**P3 = 최적**⁤");
 });
 
 test("prepareFootnotes prefers the document's own definition over the comment file", () => {

@@ -37,9 +37,13 @@ export const chatNotesWriteRpc = defineRpc({
   output: z.object({ status: z.enum(["written", "conflict"]) }),
 });
 
-/** A stable key for a message: its id, or a hash of its text when the provider gives none. */
-export function messageKey(messageId: string | null | undefined, text: string): string {
-  if (messageId) return messageId;
+/**
+ * A stable key for a message: a hash of its text. The provider's message id cannot be used:
+ * Claude gives the API message id while an answer streams but the transcript entry's uuid when
+ * the conversation is replayed after a restart, so footnotes keyed by id would vanish.
+ */
+export function messageKey(text: string): string {
+  text = text.trim();
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     hash ^= text.charCodeAt(i);
@@ -102,9 +106,9 @@ function firstOfOverlaps(placed: { note: Footnote; range: TextRange }[]): Set<Fo
 
 /**
  * Prepares one message for display. AI explanations: each passage is wrapped in the highlight
- * sentinels and followed by the footnote's superscript number; where passages overlap, the
- * earlier one is highlighted and the others show only their superscript, so every footnote
- * stays reachable. The reader's instructions are wrapped in their own sentinels, independent of
+ * sentinels, with no number: hovering or clicking it opens the footnote. Where passages overlap,
+ * the earlier one is highlighted and the others show only their superscript number, so every
+ * footnote stays reachable. The reader's instructions are wrapped in their own sentinels, independent of
  * explanations, and get no number; an instruction overlapping an earlier one is reachable from
  * the side panel only.
  */
@@ -128,7 +132,8 @@ export function chatMarks(text: string, key: string, notes: Footnote[]): { body:
   };
   for (const { note, range } of explained) {
     const at = closeAt(range.to);
-    at.numbers.push(note.number);
+    // A highlighted explanation shows no number; only those left without a highlight need one.
+    if (!highlighted.has(note)) at.numbers.push(note.number);
     if (highlighted.has(note)) {
       at.mark = true;
       opens.set(range.from, (opens.get(range.from) ?? "") + MARK_OPEN);

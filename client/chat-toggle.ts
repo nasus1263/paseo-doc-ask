@@ -36,7 +36,7 @@ function apply(next: boolean): void {
                   type: "plugin",
                   kind: CHAT_MESSAGE_KIND,
                   version: 1,
-                  data: { text: item.text, key: messageKey(item.messageId, item.text) },
+                  data: { text: item.text, key: messageKey(item.text) },
                 },
               ],
             }

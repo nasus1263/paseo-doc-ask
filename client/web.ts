@@ -580,8 +580,7 @@ function located(
 /**
  * Finds each mark in the rendered DOM. The preview wraps marks in invisible sentinels, one pair
  * for footnotes and one for instructions, so each is found exactly where it is. If the renderer
- * dropped a kind's sentinels, falls back to a text search that prefers the occurrence followed
- * by the mark's own footnote number.
+ * dropped a kind's sentinels, falls back to a text search for each mark in order.
  */
 function locateMarks(root: DomElement, marks: readonly Mark[]): LocatedMark[] {
   if (marks.length === 0) return [];
@@ -619,17 +618,7 @@ function locateMarks(root: DomElement, marks: readonly Mark[]): LocatedMark[] {
     for (const mark of kind) {
       const needle = [...mark.text].filter(isKept).join("");
       if (needle === "") continue;
-      let chosen = -1;
-      for (let index = plain.indexOf(needle, cursor); index !== -1; index = plain.indexOf(needle, index + 1)) {
-        if (chosen === -1) chosen = index;
-        if (mark.number === null || mark.comment) break;
-        const last = at[index + needle.length - 1];
-        const next = (last.node.textContent ?? "").slice(last.offset + 1, last.offset + 8);
-        if (next.startsWith(superscript(mark.number))) {
-          chosen = index;
-          break;
-        }
-      }
+      const chosen = plain.indexOf(needle, cursor);
       if (chosen === -1) continue;
       const last = at[chosen + needle.length - 1];
       const end = { ...last, offset: last.offset + 1 };
