@@ -11,6 +11,13 @@ export function setPluginClient(next: PluginClientContext | null): void {
   client = next;
 }
 
+/** The items of an agent's latest `limit` timeline entries, oldest first; empty without a connection. */
+export async function recentTimeline(agentId: string, limit: number): Promise<{ type: string; text?: string }[]> {
+  if (!client) return [];
+  const page = await client.paseo.agents.ref(agentId).timeline.refetch({ direction: "tail", limit, projection: "projected" });
+  return page.entries.map((entry) => entry.item);
+}
+
 /** A fresh ID naming one explain request, for `followAnswer`. */
 export function newRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;

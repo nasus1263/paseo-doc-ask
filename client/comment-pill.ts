@@ -1,5 +1,6 @@
 import type { PluginButton, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { Platform } from "react-native";
+import { answerAge } from "../shared/chat";
 import { existingChatController, onChatChange } from "./chat-controller";
 import {
   chatAnnotationsEnabled,
@@ -9,8 +10,8 @@ import {
 } from "./chat-toggle";
 
 /**
- * A switch in every agent's composer: whether the reader's instructions (their comments) on the
- * previous answer go out with their next message. It shows how many are waiting and lists them
+ * A switch in every agent's composer: whether the reader's unsent instructions (their comments)
+ * on earlier answers go out with their next message. It shows how many are waiting and lists them
  * in its tooltip. Shown whether or not there are any, and only on web and desktop, where the
  * send hook in `web.ts` can attach them.
  */
@@ -27,12 +28,14 @@ function button(agentId: string): Partial<PluginButton> {
   const on = includeCommentsEnabled();
   const items = chatAnnotationsEnabled() ? (existingChatController(agentId)?.outgoingComments()?.items ?? []) : [];
   const state = on
-    ? "켜짐: 직전 답변에 단 내 지시를 다음 메시지에 함께 보냅니다."
-    : "꺼짐: 직전 답변에 단 내 지시를 보내지 않습니다.";
+    ? "켜짐: 이전 답변들에 단 내 지시 중 아직 보내지 않은 것을 다음 메시지에 함께 보냅니다."
+    : "꺼짐: 이전 답변에 단 내 지시를 보내지 않습니다.";
   const list =
     items.length === 0
       ? "보낼 지시가 없습니다."
-      : items.map((item, i) => `${i + 1}. ${shorten(item.comment)} (“${shorten(item.quote)}”)`).join("\n");
+      : items
+          .map((item, i) => `${i + 1}. [${answerAge(item.turnsAgo)}] ${shorten(item.comment)} (“${shorten(item.quote)}”)`)
+          .join("\n");
   return {
     title: `${state}\n${list}`,
     icon: on ? "MessageSquareQuote" : "MessageSquareOff",

@@ -1,7 +1,16 @@
 import { useAgent, useRpc } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useSyncExternalStore } from "react";
-import { annotateChat, chatNotes, chatNotesReadRpc, chatNotesWriteRpc, markSent, unsentComments } from "../shared/chat";
+import {
+  annotateChat,
+  answerAges,
+  type AnswerInfo,
+  chatNotes,
+  chatNotesReadRpc,
+  chatNotesWriteRpc,
+  markSent,
+  unsentComments,
+} from "../shared/chat";
 import { type AskMode, explainRpc } from "../shared/explain";
 import {
   appendToFootnote,
@@ -13,7 +22,7 @@ import {
   toggledBookmark,
 } from "../shared/markdown";
 import { DeleteNoteModal, MemoModal, QuestionModal, shortTitle, type Theme } from "./doc-ask-panel";
-import { followAnswer, newRequestId, openNotesPanel } from "./host";
+import { followAnswer, newRequestId, openNotesPanel, recentTimeline } from "./host";
 import { type Message, type NotesActions, publishNotes, refreshNotes } from "./notes-store";
 
 /**
@@ -55,6 +64,11 @@ export interface MessageSelection {
   /** Kept characters before the selection in the rendered message. */
   hint: number;
 }
+
+/** How many timeline entries are read back to count turns; answers further back show no age. */
+const TIMELINE_LOOKBACK = 500;
+/** How long footnote and answer changes settle before the turns are read again. */
+const AGES_DELAY_MS = 300;
 
 const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문", visual: "시각화" };
 
@@ -116,20 +130,45 @@ class ChatController {
   }
   private parsed: { text: string; notes: Footnote[] } | null = null;
 
-  /** The newest completed answer drawn so far: the "previous answer" of the next message. */
-  private latest: { key: string; text: string; time: number } | null = null;
+  /** The completed answers drawn so far: text by message key. */
+  private readonly answers = new Map<string, string>();
+  /** How many turns ago each answer came, as last read from the timeline. */
+  private ages = new Map<string, number>();
+  private agesTimer: ReturnType<typeof setTimeout> | null = null;
 
-  noteAnswer(key: string, text: string, time: number): void {
-    if (this.latest && time < this.latest.time) return;
-    const changed = this.latest?.key !== key || this.latest.text !== text;
-    this.latest = { key, text, time };
-    if (changed) notifyChange(this.agentId);
+  noteAnswer(key: string, text: string): void {
+    if (this.answers.get(key) === text) return;
+    this.answers.set(key, text);
+    this.refreshAges();
+    notifyChange(this.agentId);
   }
 
-  /** The reader's unsent comments on the latest answer, to go out with their next message. */
+  /** The reader's unsent comments on every answer, to go out with their next message. */
   outgoingComments(): ReturnType<typeof unsentComments> {
-    if (!this.latest || this.state.text === null) return null;
-    return unsentComments(this.latest.text, this.latest.key, this.notes());
+    if (this.state.text === null) return null;
+    const answers = new Map<string, AnswerInfo>();
+    for (const [key, text] of this.answers) answers.set(key, { text });
+    for (const [key, turnsAgo] of this.ages) answers.set(key, { ...answers.get(key), turnsAgo });
+    return unsentComments(this.notes(), answers);
+  }
+
+  /**
+   * Rereads, shortly, how many turns ago each answer came, while comments wait to go. The send
+   * hook cannot wait, so it uses what this last read; after a new answer or a change of the
+   * footnotes it is current.
+   */
+  private refreshAges(): void {
+    if (this.agesTimer) clearTimeout(this.agesTimer);
+    this.agesTimer = setTimeout(() => {
+      this.agesTimer = null;
+      if (!this.outgoingComments()) return;
+      recentTimeline(this.agentId, TIMELINE_LOOKBACK)
+        .then((items) => {
+          this.ages = answerAges(items);
+          notifyChange(this.agentId);
+        })
+        .catch((cause: unknown) => console.error("[doc-ask] Could not read the conversation turns", cause));
+    }, AGES_DELAY_MS);
   }
 
   /** Records that comments `labels` went out, so the next message does not repeat them. */
@@ -149,7 +188,10 @@ class ChatController {
     const textChanged = change.text !== undefined && change.text !== this.state.text;
     this.state = { ...this.state, ...change };
     for (const listener of this.listeners) listener();
-    if (textChanged) notifyChange(this.agentId);
+    if (textChanged) {
+      notifyChange(this.agentId);
+      this.refreshAges();
+    }
     refreshNotes(this.snapshot());
   }
 

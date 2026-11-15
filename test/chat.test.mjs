@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, anchorRange, annotateChat, chatMarks, chatNotes, copyComments, messageKey, markSent, unsentComments } from "../shared/chat.ts";
+import { anchorAt, anchorRange, annotateChat, answerAges, chatMarks, chatNotes, copyComments, messageKey, markSent, unsentComments } from "../shared/chat.ts";
 import { setNoteMeta } from "../shared/markdown.ts";
 
 test("messageKey hashes the text, ignoring surrounding whitespace", () => {
@@ -112,17 +112,51 @@ test("unsentComments quotes only the reader's comments not sent yet, and markSen
   comments = annotateChat(comments, text, "m", { from: 11, to: 13 }, "주석", "캐시", "예시 필요", { comment: true }).comments;
   comments = annotateChat(comments, "다른 답", "other", { from: 0, to: 2 }, "주석", "다른", "무관", { comment: true }).comments;
 
-  const pending = unsentComments(text, "m", chatNotes(comments));
-  assert.deepEqual(pending.labels, ["2", "3"]);
-  assert.deepEqual(pending.items, [
-    { quote: "멱등성", comment: "동의함" },
-    { quote: "캐시", comment: "예시 필요" },
+  // "m" is the latest answer, "other" came three turns ago: oldest answer first.
+  const answers = new Map([
+    ["m", { text, turnsAgo: 1 }],
+    ["other", { text: "다른 답", turnsAgo: 3 }],
   ]);
-  assert.equal(pending.block, "> 멱등성\n\n동의함\n\n> 캐시\n\n예시 필요");
+  const pending = unsentComments(chatNotes(comments), answers);
+  assert.deepEqual(pending.labels, ["4", "2", "3"]);
+  assert.deepEqual(pending.items, [
+    { quote: "다른", comment: "무관", turnsAgo: 3 },
+    { quote: "멱등성", comment: "동의함", turnsAgo: 1 },
+    { quote: "캐시", comment: "예시 필요", turnsAgo: 1 },
+  ]);
+  assert.equal(
+    pending.block,
+    "### 3턴 전 답변\n\n> 다른\n\n무관\n\n### 직전 답변\n\n> 멱등성\n\n동의함\n\n> 캐시\n\n예시 필요",
+  );
 
+  // Only the ones not sent yet go next time.
+  const partly = markSent(comments, ["2", "3"]);
+  assert.deepEqual(unsentComments(chatNotes(partly), answers).labels, ["4"]);
   const sent = markSent(comments, pending.labels);
-  assert.equal(unsentComments(text, "m", chatNotes(sent)), null);
+  assert.equal(unsentComments(chatNotes(sent), answers), null);
   // Sent comments keep their anchor and stay in the copy-all output.
-  assert.equal(copyComments(text, "m", chatNotes(sent)), pending.block);
-  assert.equal(unsentComments("다른 답", "other", chatNotes(sent)).labels.length, 1);
+  assert.equal(copyComments(text, "m", chatNotes(sent)), "> 멱등성\n\n동의함\n\n> 캐시\n\n예시 필요");
+});
+
+test("unsentComments sends comments on answers of unknown age first", () => {
+  let comments = annotateChat("", "옛 답", "old", { from: 0, to: 1 }, "주석", "옛", "옛 지시", { comment: true }).comments;
+  comments = annotateChat(comments, "새 답", "new", { from: 0, to: 1 }, "주석", "새", "새 지시", { comment: true }).comments;
+  const pending = unsentComments(chatNotes(comments), new Map([["new", { text: "새 답", turnsAgo: 1 }]]));
+  assert.equal(pending.block, "### 이전 답변(시점 확인 안 됨)\n\n> 옛\n\n옛 지시\n\n### 직전 답변\n\n> 새\n\n새 지시");
+});
+
+test("answerAges counts user messages after each answer", () => {
+  const ages = answerAges([
+    { type: "assistant_message", text: "A" },
+    { type: "user_message", text: "q1" },
+    { type: "assistant_message", text: "B" },
+    { type: "tool_call" },
+    { type: "assistant_message", text: "C" },
+    { type: "user_message", text: "q2" },
+    { type: "assistant_message", text: "D" },
+  ]);
+  assert.deepEqual(
+    ["A", "B", "C", "D"].map((text) => ages.get(messageKey(text))),
+    [3, 2, 2, 1],
+  );
 });

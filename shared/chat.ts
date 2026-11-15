@@ -173,7 +173,16 @@ export function chatMarks(text: string, key: string, notes: Footnote[]): { body:
  * each passage quoted, followed by the comment.
  */
 export function copyComments(text: string, key: string, notes: Footnote[]): string {
-  return commentEntries(text, key, notes)
+  return quoteComments(
+    placedNotes(text, key, notes)
+      .filter(({ note }) => note.meta.comment)
+      .map(({ note, range }) => ({ quote: text.slice(range.from, range.to), comment: commentOf(note) })),
+  );
+}
+
+/** Each passage quoted, followed by its comment. */
+function quoteComments(entries: { quote: string; comment: string }[]): string {
+  return entries
     .map(({ quote, comment }) => {
       const quoted = quote
         .split("\n")
@@ -184,35 +193,79 @@ export function copyComments(text: string, key: string, notes: Footnote[]): stri
     .join("\n\n");
 }
 
-/** The reader's comments on message `key` in passage order: the passage and the comment. */
-function commentEntries(text: string, key: string, notes: Footnote[]): { label: string; quote: string; comment: string }[] {
-  return placedNotes(text, key, notes)
-    .filter(({ note }) => note.meta.comment)
-    .map(({ note, range }) => ({
-      label: note.label,
-      quote: text.slice(range.from, range.to),
-      // The definition starts with its bold title, such as "지시: …"; the comment follows it.
-      comment: note.content.replace(/^\*\*[^\n]*\*\*\s*/, "").trim(),
-    }));
+/** A comment's own words: the definition starts with its bold title, such as "지시: …". */
+function commentOf(note: Footnote): string {
+  return note.content.replace(/^\*\*[^\n]*\*\*\s*/, "").trim();
+}
+
+/** What is known of an answer: its text, and how many turns ago it came (1: the latest). */
+export interface AnswerInfo {
+  text?: string;
+  turnsAgo?: number;
+}
+
+/** How an answer `turnsAgo` turns back is named to the agent. */
+export function answerAge(turnsAgo: number | undefined): string {
+  if (turnsAgo === undefined) return "이전 답변(시점 확인 안 됨)";
+  return turnsAgo <= 1 ? "직전 답변" : `${turnsAgo}턴 전 답변`;
 }
 
 /**
- * The reader's comments on message `key` not yet sent to the agent: quoted the way
- * `copyComments` does, one by one, and their labels. Null when there are none.
+ * The reader's comments not yet sent to the agent, on every answer: grouped by answer, oldest
+ * first, each group headed by how many turns ago its answer came and quoted the way
+ * `copyComments` does. `answers` tells the text (for passage order) and age of the answers it
+ * knows; comments on others still go, after their passage alone. Null when there are none.
  */
 export function unsentComments(
-  text: string,
-  key: string,
   notes: Footnote[],
-): { block: string; labels: string[]; items: { quote: string; comment: string }[] } | null {
-  const unsent = notes.filter((note) => note.meta.comment && !note.meta.sent);
-  const entries = commentEntries(text, key, unsent);
-  if (entries.length === 0) return null;
+  answers: ReadonlyMap<string, AnswerInfo>,
+): { block: string; labels: string[]; items: { quote: string; comment: string; turnsAgo?: number }[] } | null {
+  const groups = new Map<string, Footnote[]>();
+  for (const note of notes) {
+    const anchor = note.meta.anchor;
+    if (!note.meta.comment || note.meta.sent || !anchor) continue;
+    const group = groups.get(anchor.message);
+    if (group) group.push(note);
+    else groups.set(anchor.message, [note]);
+  }
+  if (groups.size === 0) return null;
+  const byLabel = (a: Footnote, b: Footnote) => (Number(a.label) || 0) - (Number(b.label) || 0);
+  const answersInOrder = [...groups].map(([key, group]) => {
+    const { text, turnsAgo } = answers.get(key) ?? {};
+    const at = (note: Footnote) => (text ? (anchorRange(text, note.meta.anchor as NoteAnchor)?.from ?? Infinity) : Infinity);
+    const ordered = [...group].sort((a, b) => at(a) - at(b) || byLabel(a, b));
+    return {
+      turnsAgo,
+      first: Math.min(...group.map((note) => Number(note.label) || 0)),
+      entries: ordered.map((note) => ({ label: note.label, quote: (note.meta.anchor as NoteAnchor).quote, comment: commentOf(note) })),
+    };
+  });
+  // Oldest answer first; one of unknown age lies beyond the turns looked at, so it comes first.
+  answersInOrder.sort((a, b) => (b.turnsAgo ?? Infinity) - (a.turnsAgo ?? Infinity) || a.first - b.first);
+  const entries = answersInOrder.flatMap(({ turnsAgo, entries }) => entries.map((entry) => ({ ...entry, turnsAgo })));
   return {
-    block: copyComments(text, key, unsent),
+    block: answersInOrder.map(({ turnsAgo, entries }) => `### ${answerAge(turnsAgo)}\n\n${quoteComments(entries)}`).join("\n\n"),
     labels: entries.map((entry) => entry.label),
-    items: entries.map(({ quote, comment }) => ({ quote, comment })),
+    items: entries.map(({ quote, comment, turnsAgo }) => ({ quote, comment, ...(turnsAgo !== undefined ? { turnsAgo } : {}) })),
   };
+}
+
+/**
+ * How many turns ago each answer in `timeline` (oldest first) came, by message key: 1 for the
+ * answers after the last user message, 2 for those before it, and so on.
+ */
+export function answerAges(timeline: readonly { type: string; text?: string }[]): Map<string, number> {
+  const ages = new Map<string, number>();
+  let userMessages = 0;
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const item = timeline[i];
+    if (item.type === "user_message") userMessages++;
+    else if (item.type === "assistant_message" && item.text) {
+      const key = messageKey(item.text);
+      if (!ages.has(key)) ages.set(key, userMessages + 1);
+    }
+  }
+  return ages;
 }
 
 /** Marks footnotes `labels` in `comments` as sent to the agent. */

@@ -61,7 +61,7 @@ export default function contribute(client: PluginClientContext) {
       const pending = controller?.outgoingComments();
       if (!controller || !pending) return null;
       return {
-        text: `[직전 답변에 대한 사용자 지시] 각 인용(>)은 당신의 직전 답변 구절이고, 그 아래가 그 구절에 대한 지시다.\n\n${pending.block}`,
+        text: `[이전 답변에 대한 사용자 지시] 각 소제목은 그 답변이 몇 턴 전 답변인지(직전 답변 = 1턴 전)이고, 그 아래 각 인용(>)은 그 답변의 구절, 그 아래가 그 구절에 대한 지시다.\n\n${pending.block}`,
         onSent: () => void controller.markCommentsSent(pending.labels),
       };
     }),
