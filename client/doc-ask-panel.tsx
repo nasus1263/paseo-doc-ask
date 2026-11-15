@@ -101,7 +101,7 @@ interface AskRequest {
 }
 
 
-const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문" };
+const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문", visual: "시각화" };
 const TOOLTIP_WIDTH = 380;
 const TOOLTIP_MAX_HEIGHT = 300;
 
@@ -1407,13 +1407,6 @@ export function NoteDetail({
               : theme.colors.foregroundMuted,
       },
       actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
-      button: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
-        backgroundColor: theme.colors.accent,
-      },
-      buttonLabel: { color: theme.colors.accentForeground },
       memo: {
         borderLeftWidth: 2,
         borderLeftColor: theme.colors.statusWarning,
@@ -1513,18 +1506,18 @@ export function NoteDetail({
           {selection && showsNote && message.note !== undefined ? (
             <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
               {ASK_ACTIONS.map((action) => (
-                <Pressable
+                <IconButton
                   key={action.mode}
-                  accessibilityRole="button"
-                  accessibilityLabel={`각주에서 선택한 부분 ${action.label}`}
-                  style={styles.button}
+                  icon={action.icon}
+                  label={action.tooltip}
+                  theme={theme}
+                  align="left"
+                  filled
                   onPress={() => {
                     onAsk({ text: selection.text, label: message.note as string }, action.mode);
                     setSelection(null);
                   }}
-                >
-                  <Text style={styles.buttonLabel}>{action.label}</Text>
-                </Pressable>
+                />
               ))}
             </View>
           ) : null}

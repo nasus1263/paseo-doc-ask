@@ -16,7 +16,7 @@ type Order = "asc" | "desc";
 /** Bookmarks loaded at a time. */
 const PAGE_SIZE = 20;
 
-const KIND_ICON: Record<string, string> = { 설명: "Lightbulb", 질문: "CircleHelp", 주석: "PenLine", 지시: "PenLine" };
+const KIND_ICON: Record<string, string> = { 설명: "Lightbulb", 질문: "CircleHelp", 시각화: "Shapes", 주석: "PenLine", 지시: "PenLine" };
 
 /**
  * The side "북마크" panel: the bookmarked footnotes of every document in the workspace, newest

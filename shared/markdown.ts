@@ -442,7 +442,7 @@ export function appendToFootnote(
 }
 
 /** A follow-up's heading line inside a footnote, as `appendToFootnote` writes it. */
-const FOLLOW_UP_HEADING = /^\*\*(설명|질문): .*\*\*$/;
+const FOLLOW_UP_HEADING = /^\*\*(설명|질문|시각화): .*\*\*$/;
 
 /**
  * Splits a footnote's content into the original note and each follow-up appended to it, each
@@ -722,9 +722,9 @@ export function prepareFootnotes(
 }
 
 /** What a footnote unit is: an AI explanation or answer, or the reader's own comment. */
-export type NoteKind = "설명" | "질문" | "주석" | "지시";
+export type NoteKind = "설명" | "질문" | "시각화" | "주석" | "지시";
 
-const TITLE_LINE = /^\*\*(설명|질문|주석|지시): ([\s\S]*)\*\*\s*$/;
+const TITLE_LINE = /^\*\*(설명|질문|시각화|주석|지시): ([\s\S]*)\*\*\s*$/;
 
 /**
  * A footnote unit's bold `kind: subject` title line split from its body, so the kind can be

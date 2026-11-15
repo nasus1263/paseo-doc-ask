@@ -197,6 +197,12 @@ function buildPrompt(agentId: string, input: RpcInput<typeof explainRpc>, extraP
   const question = input.question?.trim();
   if (input.mode === "question" && question) {
     parts.push("위 선택 부분에 대한 질문에 답해 줘.", "<question>", question, "</question>");
+  } else if (input.mode === "visual") {
+    // 시각화: a visual aid is the point, whatever the passage is.
+    parts.push(
+      "위 선택 부분을 시각 자료 중심으로 설명해 줘. 내용에 가장 알맞은 형식(표, mermaid, svg, html)으로 시각 자료를 반드시 하나 이상 넣고, 글은 자료를 읽는 데 필요한 만큼만 짧게 쓴다.",
+    );
+    if (question) parts.push("<request>", question, "</request>");
   } else if (question) {
     // 설명 with text typed in the selection box: explain the way the reader asked.
     parts.push("위 선택 부분을 다음 요청에 맞게 설명해 줘.", "<request>", question, "</request>");

@@ -48,13 +48,17 @@ export function Tooltip({
   );
 }
 
-/** A small icon-only button, like the ones in Paseo's panel headers: muted, filled on hover, with a tooltip. */
+/**
+ * A small icon-only button, like the ones in Paseo's panel headers: muted, filled on hover, with
+ * a tooltip. `filled` draws it on the accent color, for buttons floating over text.
+ */
 export function IconButton({
   icon,
   label,
   theme,
   color,
   align,
+  filled = false,
   onPress,
 }: {
   icon: string;
@@ -62,6 +66,7 @@ export function IconButton({
   theme: Theme;
   color?: string;
   align?: "left" | "right";
+  filled?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -78,15 +83,26 @@ export function IconButton({
           onHoverIn={hover.onHoverIn}
           onHoverOut={hover.onHoverOut}
           style={({ pressed, hovered }: PressState) => ({
-            width: 26,
-            height: 26,
+            width: filled ? 30 : 26,
+            height: filled ? 28 : 26,
             borderRadius: 6,
             alignItems: "center" as const,
             justifyContent: "center" as const,
-            backgroundColor: pressed ? theme.colors.surface2 : hovered ? theme.colors.surface1 : "transparent",
+            backgroundColor: filled
+              ? theme.colors.accent
+              : pressed
+                ? theme.colors.surface2
+                : hovered
+                  ? theme.colors.surface1
+                  : "transparent",
+            opacity: filled && (pressed || hovered) ? 0.85 : 1,
           })}
         >
-          <Icon name={icon} size={15} color={color ?? theme.colors.foregroundMuted} />
+          <Icon
+            name={icon}
+            size={15}
+            color={color ?? (filled ? theme.colors.accentForeground : theme.colors.foregroundMuted)}
+          />
         </Pressable>
       )}
     </Tooltip>

@@ -56,7 +56,7 @@ export interface MessageSelection {
   hint: number;
 }
 
-const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문" };
+const MODE_LABEL: Record<AskMode, string> = { term: "설명", question: "질문", visual: "시각화" };
 
 class ChatController {
   readonly owner = Symbol("doc-ask-chat");

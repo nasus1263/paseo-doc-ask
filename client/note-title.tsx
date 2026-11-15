@@ -9,6 +9,7 @@ import type { Theme } from "./doc-ask-panel";
 const KIND_ICON: Record<NoteKind, string> = {
   설명: "Lightbulb",
   질문: "CircleHelp",
+  시각화: "Shapes",
   주석: "PenLine",
   지시: "PenLine",
 };
@@ -17,6 +18,7 @@ const KIND_ICON: Record<NoteKind, string> = {
 const KIND_LABEL: Record<NoteKind, string> = {
   설명: "설명: AI가 선택한 구절을 설명한 답",
   질문: "질문: AI가 질문에 답한 내용",
+  시각화: "시각화: AI가 시각 자료로 설명한 답",
   주석: "주석: 내가 남긴 메모",
   지시: "지시: 에이전트에게 전할 내 지시",
 };

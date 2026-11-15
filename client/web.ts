@@ -41,6 +41,7 @@ interface DomButton extends DomEvents {
   className: string;
   textContent: string | null;
   type: string;
+  title: string;
 }
 interface DomDiv {
   className: string;
@@ -804,10 +805,11 @@ export interface DocViewerHandle {
 
 export type AskHandler = (range: TextRange, selected: string, mode: AskMode) => void;
 
-/** Labels of the actions offered over a selection, in display order. */
-export const ASK_ACTIONS: readonly { mode: AskMode; label: string }[] = [
-  { mode: "term", label: "설명" },
-  { mode: "question", label: "질문" },
+/** The actions offered over a selection, in display order: label, icon and tooltip. */
+export const ASK_ACTIONS: readonly { mode: AskMode; label: string; icon: string; tooltip: string }[] = [
+  { mode: "term", label: "설명", icon: "Lightbulb", tooltip: "설명: 선택한 부분을 쉽게 설명" },
+  { mode: "visual", label: "시각화", icon: "Shapes", tooltip: "시각화: 표, 다이어그램, 그림으로 설명" },
+  { mode: "question", label: "질문", icon: "CircleHelp", tooltip: "질문: 선택한 부분에 대해 질문" },
 ];
 
 /**
@@ -851,6 +853,7 @@ export function mountViewer(
             button.type = "button";
             button.className = "cm-doc-ask-button";
             button.textContent = action.label;
+            button.title = action.tooltip;
             // Keep the editor selection when the button is pressed.
             button.addEventListener("mousedown", (event) => event.preventDefault());
             button.addEventListener("click", () => onAsk(range, selected, action.mode));

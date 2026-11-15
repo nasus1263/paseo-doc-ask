@@ -1,21 +1,30 @@
 import { copyText, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type MutableRefObject, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import type { AskMode } from "../shared/explain";
+import { IconButton } from "./controls";
 import type { Theme } from "./doc-ask-panel";
-import { holdHighlight, keepSelectionOnPress, watchSelection } from "./web";
+import { ASK_ACTIONS, holdHighlight, keepSelectionOnPress, watchSelection } from "./web";
 
 /**
  * The box that opens where a selection ends, shared by documents and agent answers: a focused
  * text field (Enter saves it as the reader's comment or, when empty, asks for 설명; Ctrl+Enter
  * asks it as a question; Ctrl+C when empty copies the selection; Shift+Enter breaks the line;
- * Esc cancels) and 설명, which uses the typed text as the request when there is one.
+ * Esc cancels) and icon buttons: 설명 and 시각화, which use the typed text as the request when
+ * there is one, 질문, and saving the typed text as a comment.
  */
 
-/** Wide enough for the key hint on one line next to 설명. */
+/** Wide enough for the key hint on one line next to the buttons. */
 const BAR_WIDTH = 480;
 const LINE_HEIGHT = 20;
 const MAX_INPUT_HEIGHT = 160;
+/** Tooltips of the box's buttons, with what the typed text does and the matching key. */
+const COMPOSER_TIPS: Record<AskMode, string> = {
+  term: "설명: 선택한 부분을 쉽게 설명. 입력한 내용은 요청사항으로 쓴다 (입력이 비었을 때 Enter)",
+  visual: "시각화: 표, 다이어그램, 그림으로 설명. 입력한 내용은 요청사항으로 쓴다",
+  question: "질문: 입력한 내용을 질문으로 보낸다 (Ctrl+Enter)",
+};
+
 /** How far below the pointer the box opens; mirrors `watchSelection`'s offset. */
 const POINTER_GAP = 12;
 
@@ -104,7 +113,7 @@ export function SelectionComposer({
   useEffect(() => {
     setText("");
   }, [draft.id]);
-  // Pressing 설명 must not blur the text field first.
+  // Pressing a button must not blur the text field first.
   useEffect(() => keepSelectionOnPress(bar.current), [draft.id]);
 
   const save = async () => {
@@ -189,13 +198,6 @@ export function SelectionComposer({
         textAlignVertical: "top" as const,
       },
       row: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-      button: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
-        backgroundColor: theme.colors.accent,
-      },
-      label: { color: theme.colors.accentForeground },
       hint: { flex: 1, textAlign: "right" as const, color: theme.colors.foregroundMuted, fontSize: 11 },
     }),
     [theme],
@@ -228,14 +230,27 @@ export function SelectionComposer({
         style={[styles.input, { height: inputHeight }]}
       />
       <View style={styles.row}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="선택한 부분 설명"
-          style={styles.button}
-          onPress={() => ask("term")}
-        >
-          <Text style={styles.label}>설명</Text>
-        </Pressable>
+        {ASK_ACTIONS.map((action) => (
+          <IconButton
+            key={action.mode}
+            icon={action.icon}
+            label={COMPOSER_TIPS[action.mode]}
+            theme={theme}
+            align="left"
+            filled
+            onPress={() => ask(action.mode)}
+          />
+        ))}
+        {text.trim() ? (
+          <IconButton
+            icon="PenLine"
+            label={`${commentLabel}: 입력한 내용을 이 구절에 남긴다. AI에게 묻지 않는다 (Enter)`}
+            theme={theme}
+            align="left"
+            filled
+            onPress={() => void save()}
+          />
+        ) : null}
         <Text style={styles.hint} numberOfLines={1}>
           {saving ? "저장 중…" : `Enter ${commentLabel}(비면 설명) · Ctrl+Enter 질문 · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>

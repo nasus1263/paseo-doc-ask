@@ -1,7 +1,8 @@
 import { defineRpc, defineSettings, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export const askModeSchema = z.enum(["term", "question"]);
+/** `term` explains, `question` answers a question, `visual` explains through a visual aid. */
+export const askModeSchema = z.enum(["term", "question", "visual"]);
 export type AskMode = z.infer<typeof askModeSchema>;
 
 /** Asks the workspace's resident explainer agent about a selected passage. */

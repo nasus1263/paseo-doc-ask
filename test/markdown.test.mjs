@@ -276,6 +276,8 @@ test("a document comment on free text is highlighted and marked as a comment", (
 test("splitTitle separates a unit's kind and subject from its body", () => {
   assert.deepEqual(splitTitle("**설명: 낙하**\n\n본문"), { kind: "설명", subject: "낙하", body: "본문" });
   assert.deepEqual(splitTitle("**지시: a: b**"), { kind: "지시", subject: "a: b", body: "" });
+  assert.deepEqual(splitTitle("**시각화: 궤도**\n\n그림"), { kind: "시각화", subject: "궤도", body: "그림" });
+  assert.deepEqual(splitFollowUps("**설명: a**\n\nA\n\n**시각화: b**\n\nB"), ["**설명: a**\n\nA", "**시각화: b**\n\nB"]);
   assert.equal(splitTitle("**메모: x**\n\n본문"), null);
   assert.equal(splitTitle("본문만"), null);
 });
