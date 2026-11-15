@@ -535,6 +535,8 @@ function extractDefinitions(text: string, definitions: Map<string, Definition>):
 /** Per-footnote reader state: a bookmark and a free-form memo. */
 export interface NoteMeta {
   bookmark?: boolean;
+  /** When the footnote was bookmarked, as an ISO time; absent on bookmarks made before it was kept. */
+  bookmarkedAt?: string;
   memo?: string;
   /** For a footnote on an agent message: which message, and which occurrence of which passage. */
   anchor?: NoteAnchor;
@@ -575,6 +577,7 @@ function splitMeta(firstLine: string): { rest: string; meta: NoteMeta } {
   try {
     const parsed = JSON.parse(match[1]) as Record<string, unknown>;
     if (parsed.bookmark === true) meta.bookmark = true;
+    if (meta.bookmark && typeof parsed.bookmarkedAt === "string") meta.bookmarkedAt = parsed.bookmarkedAt;
     if (typeof parsed.memo === "string" && parsed.memo.trim() !== "") meta.memo = parsed.memo;
     const anchor = parseAnchor(parsed.anchor);
     if (anchor) meta.anchor = anchor;
@@ -589,6 +592,8 @@ function splitMeta(firstLine: string): { rest: string; meta: NoteMeta } {
 function encodeMeta(meta: NoteMeta): string {
   const clean: NoteMeta = {};
   if (meta.bookmark) clean.bookmark = true;
+  // The time goes only with the bookmark it stamps.
+  if (meta.bookmark && meta.bookmarkedAt) clean.bookmarkedAt = meta.bookmarkedAt;
   if (meta.memo?.trim()) clean.memo = meta.memo.trim();
   if (meta.anchor) clean.anchor = meta.anchor;
   if (meta.comment) clean.comment = true;
@@ -615,6 +620,13 @@ export interface Bookmark {
   title: string;
   memo: string | null;
   content: string;
+  bookmarkedAt: string | null;
+}
+
+/** `meta` with its bookmark turned on (stamped with `now`) or off. */
+export function toggledBookmark(meta: NoteMeta, now = new Date()): NoteMeta {
+  const { bookmarkedAt: _, ...rest } = meta;
+  return meta.bookmark ? { ...rest, bookmark: false } : { ...rest, bookmark: true, bookmarkedAt: now.toISOString() };
 }
 
 /** The bookmarked footnotes defined in `text`. */
@@ -628,6 +640,7 @@ export function listBookmarks(text: string): Bookmark[] {
       title: (definition.content.split("\n")[0] ?? "").replace(/\*\*/g, "").trim(),
       memo: definition.meta.memo ?? null,
       content: definition.content,
+      bookmarkedAt: definition.meta.bookmarkedAt ?? null,
     }));
 }
 

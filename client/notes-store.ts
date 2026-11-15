@@ -50,6 +50,8 @@ export interface NotesSnapshot {
   notes: Footnote[];
   message: Message | null;
   actions: NotesActions;
+  /** 각주 커밋 for this source, when it is a document in git. */
+  commit?: { run(): void; busy: boolean };
   /**
    * Dialogs the panel renders for this source, for sources with no mounted component of their
    * own to host them, such as an agent conversation.

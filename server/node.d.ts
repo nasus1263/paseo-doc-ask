@@ -9,7 +9,7 @@ declare module "node:fs/promises" {
   export function readFile(path: string): Promise<{ toString(encoding: "base64"): string }>;
   export function writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
   export function readdir(path: string, options: { withFileTypes: true }): Promise<DirEntry[]>;
-  export function stat(path: string): Promise<{ isFile(): boolean; size: number }>;
+  export function stat(path: string): Promise<{ isFile(): boolean; size: number; mtimeMs: number }>;
   export function mkdir(path: string, options: { recursive: true }): Promise<string | undefined>;
 }
 

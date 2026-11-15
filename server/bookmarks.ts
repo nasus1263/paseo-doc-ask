@@ -9,8 +9,15 @@ const SKIP = new Set(["node_modules", "dist", "build", "out", "obj", "bin", "Lib
 const MAX_DEPTH = 12;
 const MAX_FILES = 1000;
 
-/** Bookmarked footnotes of every `*.comment.md` under the workspace directory. */
-export async function listWorkspaceBookmarks({ workspaceId }: RpcInput<typeof bookmarksRpc>, { paseo }: PluginHandlerContext) {
+/**
+ * One page of the bookmarked footnotes of every `*.comment.md` under the workspace directory,
+ * ordered by when they were bookmarked. Bookmarks made before that time was recorded take their
+ * comment file's last change.
+ */
+export async function listWorkspaceBookmarks(
+  { workspaceId, order, offset, limit }: RpcInput<typeof bookmarksRpc>,
+  { paseo }: PluginHandlerContext,
+) {
   const workspace = paseo.workspaces.ref(workspaceId);
   await workspace.refresh();
   if (!workspace.directory) throw new Error("워크스페이스 디렉터리를 찾지 못했습니다.");
@@ -26,9 +33,13 @@ export async function listWorkspaceBookmarks({ workspaceId }: RpcInput<typeof bo
     const bookmarks = listBookmarks(text);
     if (bookmarks.length === 0) continue;
     const documentPath = await documentOf(file);
-    for (const bookmark of bookmarks) items.push({ documentPath, ...bookmark });
+    const changed = new Date((await stat(file)).mtimeMs).toISOString();
+    for (const bookmark of bookmarks) items.push({ documentPath, ...bookmark, bookmarkedAt: bookmark.bookmarkedAt ?? changed });
   }
-  return { items };
+  // ISO times in UTC compare as strings; ties keep document and label order.
+  const sign = order === "asc" ? 1 : -1;
+  items.sort((a, b) => sign * (a.bookmarkedAt < b.bookmarkedAt ? -1 : a.bookmarkedAt > b.bookmarkedAt ? 1 : 0));
+  return { items: items.slice(offset, offset + limit), total: items.length };
 }
 
 async function findCommentFiles(dir: string, depth = 0, found: string[] = []): Promise<string[]> {

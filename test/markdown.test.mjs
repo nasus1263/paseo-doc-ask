@@ -4,6 +4,7 @@ import {
   annotate,
   appendToFootnote,
   splitTitle,
+  toggledBookmark,
   commentPathOf,
   definesFootnote,
   buildFootnote,
@@ -234,7 +235,7 @@ test("setNoteMeta stores bookmark and memo on the definition line, hidden from c
   assert.equal(notes[0].content, "**설명: x**\n\nbody");
   assert.deepEqual(notes[1].meta, {});
   assert.deepEqual(listBookmarks(marked), [
-    { label: "1", title: "설명: x", memo: "a --> b\n둘째 줄", content: "**설명: x**\n\nbody" },
+    { label: "1", title: "설명: x", memo: "a --> b\n둘째 줄", content: "**설명: x**\n\nbody", bookmarkedAt: null },
   ]);
   // Clearing everything removes the comment.
   assert.equal(setNoteMeta(marked, "1", { bookmark: false, memo: " " }), comments);
@@ -277,4 +278,13 @@ test("splitTitle separates a unit's kind and subject from its body", () => {
   assert.deepEqual(splitTitle("**지시: a: b**"), { kind: "지시", subject: "a: b", body: "" });
   assert.equal(splitTitle("**메모: x**\n\n본문"), null);
   assert.equal(splitTitle("본문만"), null);
+});
+
+test("toggledBookmark stamps the time on and drops it off", () => {
+  const now = new Date("2026-11-15T07:00:00.000Z");
+  const on = toggledBookmark({ memo: "m" }, now);
+  assert.deepEqual(on, { memo: "m", bookmark: true, bookmarkedAt: "2026-11-15T07:00:00.000Z" });
+  assert.deepEqual(toggledBookmark(on), { memo: "m", bookmark: false });
+  const comments = setNoteMeta("[^1]: **설명: x**\n\n    body\n", "1", on);
+  assert.equal(listBookmarks(comments)[0].bookmarkedAt, "2026-11-15T07:00:00.000Z");
 });

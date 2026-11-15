@@ -1,11 +1,13 @@
-import { type PluginWorkspacePanelProps, useWorkspace } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/ui";
+import { type PluginWorkspacePanelProps, useRpc, useSettings, useWorkspace } from "@getpaseo/plugin/client";
+import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import type { PressState } from "./controls";
-import { NoteDetail } from "./doc-ask-panel";
+import { IconButton, type PressState } from "./controls";
+import { NoteDetail, PromptModal } from "./doc-ask-panel";
+import { openBookmarksPanel } from "./host";
 import { NoteTitle } from "./note-title";
-import { useNotes } from "./notes-store";
+import { type NotesSnapshot, useNotes } from "./notes-store";
+import { promptSettings, resetRpc } from "../shared/explain";
 import { directoryOf } from "../shared/links";
 import { type Footnote, splitTitle } from "../shared/markdown";
 
@@ -161,6 +163,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         <Text style={styles.document} numberOfLines={1}>
           {notes.name}
         </Text>
+        <PanelTools workspaceId={workspaceId} theme={theme} commit={notes.commit} />
       </View>
       <ScrollView style={styles.list} contentContainerStyle={styles.listContent} nestedScrollEnabled>
         <View style={styles.section}>
@@ -213,4 +216,85 @@ function ListTitle({ title, theme }: { title: string; theme: PluginWorkspacePane
     );
   }
   return <NoteTitle kind={titled.kind} subject={titled.subject} theme={theme} bold={false} lines={2} />;
+}
+
+/**
+ * The side panel's header tools: the workspace's bookmarks, 각주 커밋 for the open document,
+ * the prompt sent with every question (marked while one is set), and a fresh explainer session.
+ */
+function PanelTools({
+  workspaceId,
+  theme,
+  commit,
+}: {
+  workspaceId: string;
+  theme: PluginWorkspacePanelProps["theme"];
+  commit: NotesSnapshot["commit"];
+}) {
+  const toast = useToast();
+  const prompt = useSettings(promptSettings);
+  const hasPrompt = prompt.status === "ready" && prompt.values.extraPrompt.trim() !== "";
+  const [promptOpen, setPromptOpen] = useState(false);
+  const reset = useRpc(resetRpc);
+  const [resetting, setResetting] = useState(false);
+  const resetContext = async () => {
+    if (resetting) return;
+    setResetting(true);
+    try {
+      // Runs after any question in flight; the next question starts a fresh session.
+      await reset({ workspaceId });
+      toast.show("컨텍스트를 지웠습니다. 다음 요청부터 새 세션으로 시작합니다.", { variant: "success" });
+    } catch (cause) {
+      toast.error(`컨텍스트를 지우지 못했습니다: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setResetting(false);
+    }
+  };
+  return (
+    <>
+      <IconButton icon="Bookmark" label="워크스페이스 북마크 목록" theme={theme} onPress={() => openBookmarksPanel(workspaceId)} />
+      {commit ? (
+        <IconButton
+          icon="GitCommitHorizontal"
+          label={commit.busy ? "각주 커밋 중…" : "이 문서의 각주 변경만 git 커밋"}
+          theme={theme}
+          color={commit.busy ? theme.colors.accent : undefined}
+          onPress={() => {
+            if (!commit.busy) commit.run();
+          }}
+        />
+      ) : null}
+      <View>
+        <IconButton
+          icon="ScrollText"
+          label={hasPrompt ? "함께 보낼 프롬프트 (설정됨)" : "함께 보낼 프롬프트 설정"}
+          theme={theme}
+          color={hasPrompt ? theme.colors.foreground : undefined}
+          onPress={() => setPromptOpen(true)}
+        />
+        {hasPrompt ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: "absolute",
+              top: 4,
+              right: 4,
+              width: 6,
+              height: 6,
+              borderRadius: 3,
+              backgroundColor: theme.colors.accent,
+            }}
+          />
+        ) : null}
+      </View>
+      <IconButton
+        icon="Eraser"
+        label={resetting ? "컨텍스트 지우는 중…" : "해설 에이전트 컨텍스트 지우기"}
+        theme={theme}
+        color={resetting ? theme.colors.accent : undefined}
+        onPress={() => void resetContext()}
+      />
+      <PromptModal open={promptOpen} theme={theme} onClose={() => setPromptOpen(false)} />
+    </>
+  );
 }

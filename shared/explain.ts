@@ -67,10 +67,18 @@ export const commentsWriteRpc = defineRpc({
   output: z.object({ status: z.enum(["written", "conflict"]) }),
 });
 
-/** Bookmarked footnotes across the workspace's comment files. */
+/**
+ * One page of the bookmarked footnotes across the workspace's comment files, ordered by when
+ * they were bookmarked (the comment file's last change for bookmarks older than that record).
+ */
 export const bookmarksRpc = defineRpc({
   name: "doc-ask.bookmarks",
-  input: z.object({ workspaceId: z.string() }),
+  input: z.object({
+    workspaceId: z.string(),
+    order: z.enum(["asc", "desc"]).default("desc"),
+    offset: z.number().int().min(0).default(0),
+    limit: z.number().int().min(1).max(500).default(20),
+  }),
   output: z.object({
     items: z.array(
       z.object({
@@ -79,7 +87,10 @@ export const bookmarksRpc = defineRpc({
         title: z.string(),
         memo: z.string().nullable(),
         content: z.string(),
+        /** ISO time the list is ordered by. */
+        bookmarkedAt: z.string(),
       }),
     ),
+    total: z.number(),
   }),
 });

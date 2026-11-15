@@ -3,8 +3,9 @@ import { CHAT_MESSAGE_KIND, ChatMessage, chatMessageSchema } from "./client/chat
 import { existingChatController } from "./client/chat-controller";
 import { chatAnnotationsEnabled, includeCommentsEnabled, initChatAnnotations, setChatAnnotations } from "./client/chat-toggle";
 import { installCommentPills } from "./client/comment-pill";
+import { BookmarksPanel } from "./client/bookmarks-panel";
 import { DocAskPanel } from "./client/doc-ask-panel";
-import { NOTES_PANEL_ID, setPluginClient } from "./client/host";
+import { BOOKMARKS_PANEL_ID, NOTES_PANEL_ID, setPluginClient } from "./client/host";
 import { NotesPanel } from "./client/notes-panel";
 import { installCommentSendHook } from "./client/web";
 
@@ -24,6 +25,23 @@ export default function contribute(client: PluginClientContext) {
       icon: "NotebookPen",
       locations: ["explorer", "workspace"],
       Component: NotesPanel,
+    }),
+    client.addWorkspacePanel({
+      id: BOOKMARKS_PANEL_ID,
+      title: "북마크",
+      icon: "Bookmark",
+      locations: ["explorer", "workspace"],
+      Component: BookmarksPanel,
+    }),
+    client.addCommandCenterItem({
+      id: "open-bookmarks",
+      title: "각주 북마크 열기",
+      icon: "Bookmark",
+      keywords: ["북마크", "각주", "bookmark", "footnote"],
+      context: "workspace",
+      onSelect({ openPanel }) {
+        openPanel(BOOKMARKS_PANEL_ID);
+      },
     }),
     // The renderer stays registered so rows drawn while annotations were on keep rendering; the
     // transformer that produces them follows the "대화 주석" setting.

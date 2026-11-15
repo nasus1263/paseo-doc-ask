@@ -31,3 +31,11 @@ export function followAnswer(requestId: string, onText: (text: string) => void):
 export function openNotesPanel(workspaceId: string): void {
   client?.openPanel(NOTES_PANEL_ID, { workspaceId, location: "explorer" });
 }
+
+/** The panel id of the side "북마크" panel. */
+export const BOOKMARKS_PANEL_ID = "bookmarks";
+
+/** Opens the side "북마크" panel in the Explorer of `workspaceId`. */
+export function openBookmarksPanel(workspaceId: string): void {
+  client?.openPanel(BOOKMARKS_PANEL_ID, { workspaceId, location: "explorer" });
+}

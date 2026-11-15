@@ -9,19 +9,16 @@ import {
   useTabState,
   useWorkspace,
 } from "@getpaseo/plugin/client";
-import type { RpcOutput } from "@getpaseo/plugin";
 import { copyText, Loading, Markdown, Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import { type MutableRefObject, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type MutableRefObject, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type TextInput as NativeTextInput, Pressable, ScrollView, Text, View, type ViewStyle } from "react-native";
 import {
   type AskMode,
-  bookmarksRpc,
   commentsReadRpc,
   commentsWriteRpc,
   commitRpc,
   explainRpc,
   promptSettings,
-  resetRpc,
 } from "../shared/explain";
 import {
   annotate,
@@ -37,6 +34,7 @@ import {
   prepareFootnotes,
   removeFootnote,
   setNoteMeta,
+  toggledBookmark,
   splitFollowUps,
   splitTitle,
   type TextRange,
@@ -48,7 +46,6 @@ import {
   type FootnoteHover,
   keepSelectionOnPress,
   mountViewer,
-  onClickCapture,
   onEnterKey,
   type PreviewSearch,
   type RenderedSelection,
@@ -58,7 +55,7 @@ import {
   watchShown,
 } from "./web";
 import { stepMatch } from "../shared/search";
-import { onJumpRequest, requestJump, takeJump } from "./jumps";
+import { onJumpRequest, takeJump } from "./jumps";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import { IconButton } from "./controls";
 import { NoteTitle, TitledUnit } from "./note-title";
@@ -133,7 +130,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
     openNotesPanel(workspaceId);
   }, [workspaceId]);
   const [questionAnchor, setQuestionAnchor] = useState<Anchor | null>(null);
-  const [promptOpen, setPromptOpen] = useState(false);
   const explain = useRpc(explainRpc);
   const readComments = useRpc(commentsReadRpc);
   const writeComments = useRpc(commentsWriteRpc);
@@ -396,7 +392,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
     [file, hasCommentFile, loadComments, show, toast, writeComments],
   );
   const [memoLabel, setMemoLabel] = useState<string | null>(null);
-  const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [deleteLabel, setDeleteLabel] = useState<string | null>(null);
 
   /**
@@ -511,21 +506,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
   );
   const hoveredNote = hover ? prepared?.notes.find((note) => note.number === hover.number) : undefined;
 
-  const reset = useRpc(resetRpc);
-  const [resetting, setResetting] = useState(false);
-  const resetContext = useCallback(async () => {
-    setResetting(true);
-    try {
-      // Runs after any question in flight; the next question starts a fresh session.
-      await reset({ workspaceId });
-      toast.show("컨텍스트를 지웠습니다. 다음 요청부터 새 세션으로 시작합니다.", { variant: "success" });
-    } catch (cause) {
-      toast.error(`컨텍스트를 지우지 못했습니다: ${messageOf(cause)}`);
-    } finally {
-      setResetting(false);
-    }
-  }, [reset, toast, workspaceId]);
-
   const commit = useRpc(commitRpc);
   const [committing, setCommitting] = useState(false);
   const commitFootnotes = useCallback(async () => {
@@ -581,7 +561,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
   actionsRef.current = {
     ask: (selection, mode, question) =>
       onAction({ view: "note", text: selection.text, label: selection.label, whole: selection.whole }, mode, question),
-    toggleBookmark: (label) => void updateMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
+    toggleBookmark: (label) => void updateMeta(label, toggledBookmark),
     editMemo: setMemoLabel,
     deleteNote: setDeleteLabel,
     openNote: jumpTo,
@@ -606,10 +586,11 @@ function DocAskViewer(props: PluginFilePanelProps) {
     notes: prepared?.notes ?? [],
     message,
     actions,
+    commit: { run: () => void commitFootnotes(), busy: committing },
   };
   useEffect(() => {
     if (snapshotRef.current) refreshNotes(snapshotRef.current);
-  }, [prepared, message, file]);
+  }, [prepared, message, file, committing]);
   useEffect(() => {
     // A panel with nothing to show follows the document that opened first.
     if (snapshotRef.current) publishNotesIfIdle(snapshotRef.current);
@@ -624,16 +605,12 @@ function DocAskViewer(props: PluginFilePanelProps) {
     [],
   );
 
-  const prompt = useSettings(promptSettings);
-  const hasPrompt = prompt.status === "ready" && prompt.values.extraPrompt.trim() !== "";
-
   const styles = useMemo(
     () => ({
       panel: { flex: 1, minHeight: 0, backgroundColor: theme.colors.surface0 },
       toolbar: { flexDirection: "row" as const, gap: 16, paddingHorizontal: 16, paddingVertical: 10 },
       tab: { color: theme.colors.foregroundMuted },
       tabActive: { color: theme.colors.foreground, fontWeight: "600" as const },
-      spacer: { flex: 1 },
       error: { color: theme.colors.statusDanger, paddingHorizontal: 16, paddingVertical: 8 },
     }),
     [theme],
@@ -654,44 +631,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
             </Text>
           </Pressable>
         ))}
-        <View style={styles.spacer} />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="문서에서 검색 (Ctrl+F)"
-          onPress={searchOpen ? closeSearch : openSearch}
-        >
-          <Text style={searchOpen ? styles.tabActive : styles.tab}>검색</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="워크스페이스 북마크 목록"
-          onPress={() => setBookmarksOpen(true)}
-        >
-          <Text style={styles.tab}>북마크</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="이 문서의 각주 변경만 git 커밋"
-          disabled={committing}
-          onPress={commitFootnotes}
-        >
-          <Text style={styles.tab}>{committing ? "커밋 중…" : "각주 커밋"}</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="함께 보낼 프롬프트 설정"
-          onPress={() => setPromptOpen(true)}
-        >
-          <Text style={hasPrompt ? styles.tabActive : styles.tab}>{hasPrompt ? "프롬프트 •" : "프롬프트"}</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="해설 에이전트 컨텍스트 지우기"
-          disabled={resetting}
-          onPress={resetContext}
-        >
-          <Text style={styles.tab}>{resetting ? "지우는 중…" : "컨텍스트 지우기"}</Text>
-        </Pressable>
       </View>
       {searchOpen ? (
         <SearchBar
@@ -751,7 +690,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
           setQuestionAnchor(null);
         }}
       />
-      <PromptModal open={promptOpen} theme={theme} onClose={() => setPromptOpen(false)} />
       <DeleteNoteModal
         note={deleteLabel === null ? null : (prepared?.notes.find((n) => n.label === deleteLabel) ?? null)}
         theme={theme}
@@ -766,17 +704,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
         onClose={() => setMemoLabel(null)}
         onSave={async (memo) => {
           if (memoLabel !== null && (await updateMeta(memoLabel, (meta) => ({ ...meta, memo })))) setMemoLabel(null);
-        }}
-      />
-      <BookmarksPopover
-        open={bookmarksOpen}
-        workspaceId={workspaceId}
-        currentPath={file.path}
-        theme={theme}
-        onClose={() => setBookmarksOpen(false)}
-        onOpenHere={(label) => {
-          setBookmarksOpen(false);
-          jumpTo(label);
         }}
       />
     </View>
@@ -1211,7 +1138,7 @@ export function QuestionModal({
 }
 
 /** Edits the extra instructions sent with every request, stored in the host's plugin settings. */
-function PromptModal({ open, theme, onClose }: { open: boolean; theme: Theme; onClose: () => void }) {
+export function PromptModal({ open, theme, onClose }: { open: boolean; theme: Theme; onClose: () => void }) {
   const settings = useSettings(promptSettings);
   const [draft, setDraft] = useState("");
   const revision = useRef<string | null>(null);
@@ -1384,206 +1311,6 @@ export function MemoModal({
   );
 }
 
-type BookmarkItem = RpcOutput<typeof bookmarksRpc>["items"][number];
-
-/**
- * A bookmark of another document, drawn as a Markdown file link so Paseo opens that file in a
- * tab. Clicking first records the jump, which the opened panel takes.
- */
-function OtherDocumentBookmark({
-  documentPath,
-  linkPath,
-  label,
-  title,
-  style,
-  onFollow,
-  children,
-}: {
-  documentPath: string;
-  /** The document's path relative to the workspace root, as Paseo resolves link targets. */
-  linkPath: string;
-  label: string;
-  title: string;
-  style: ViewStyle;
-  onFollow: () => void;
-  children: ReactNode;
-}) {
-  const row = useRef<View>(null);
-  useEffect(
-    () =>
-      onClickCapture(row.current, () => {
-        requestJump(documentPath, label);
-        // Opening resolves the link asynchronously; keep the list mounted until it has.
-        setTimeout(onFollow, 300);
-      }),
-    [documentPath, label, onFollow],
-  );
-  // Paseo resolves a relative link target against the workspace root and opens it as a file tab.
-  // An absolute Windows path ("C:/…") can be taken for a URL scheme and ignored.
-  const href = linkPath;
-  const text = title.replace(/[[\]\\]/g, (ch) => `\\${ch}`);
-  return (
-    <View style={style}>
-      {/* Only the link records the jump; clicking the memo does nothing. */}
-      <View ref={row}>
-        <Markdown>{`[${text}](<${href}>)`}</Markdown>
-      </View>
-      {children}
-    </View>
-  );
-}
-
-function samePath(a: string, b: string): boolean {
-  const normal = (path: string) => path.replace(/\\/g, "/").toLowerCase();
-  return normal(a) === normal(b);
-}
-
-/**
- * Bookmarked footnotes of every document in the workspace, grouped by document. A bookmark of
- * the open document opens in the message panel; others expand in place, since plugins cannot
- * open file tabs.
- */
-function BookmarksPopover({
-  open,
-  workspaceId,
-  currentPath,
-  theme,
-  onClose,
-  onOpenHere,
-}: {
-  open: boolean;
-  workspaceId: string;
-  currentPath: string;
-  theme: Theme;
-  onClose: () => void;
-  onOpenHere: (label: string) => void;
-}) {
-  const list = useRpc(bookmarksRpc);
-  const directory = useWorkspace(workspaceId, (workspace) => workspace?.directory ?? null);
-  const [state, setState] = useState<{ items: BookmarkItem[] } | { error: string } | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    let live = true;
-    setState(null);
-    list({ workspaceId })
-      .then((result) => live && setState(result))
-      .catch((cause) => live && setState({ error: messageOf(cause) }));
-    return () => {
-      live = false;
-    };
-  }, [list, open, workspaceId]);
-
-  const styles = useMemo(
-    () => ({
-      ...modalStyles(theme),
-      group: { gap: 6 },
-      path: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      row: { paddingVertical: 6, gap: 2 },
-      title: { color: theme.colors.foreground, fontWeight: "600" as const },
-      memo: { color: theme.colors.foregroundMuted },
-      backdrop: { position: "absolute" as const, top: 0, left: 0, right: 0, bottom: 0, zIndex: 19 },
-      popover: {
-        position: "absolute" as const,
-        top: 40,
-        right: 12,
-        width: 420,
-        maxWidth: "92%" as const,
-        maxHeight: "70%" as const,
-        zIndex: 20,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface1,
-        shadowColor: "#000",
-        shadowOpacity: 0.2,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 4 },
-      },
-      popoverHeader: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        justifyContent: "space-between" as const,
-        paddingHorizontal: 16,
-        paddingTop: 12,
-        paddingBottom: 4,
-      },
-      popoverTitle: { color: theme.colors.foreground, fontWeight: "600" as const },
-      popoverBody: { paddingHorizontal: 16, paddingBottom: 16, gap: 12 },
-    }),
-    [theme],
-  );
-  const relative = (path: string) => {
-    const base = directory?.replace(/\\/g, "/").replace(/\/+$/, "");
-    const normal = path.replace(/\\/g, "/");
-    return base && normal.toLowerCase().startsWith(`${base.toLowerCase()}/`) ? normal.slice(base.length + 1) : normal;
-  };
-
-  let body;
-  if (state === null) body = <Text style={styles.muted}>찾는 중…</Text>;
-  else if ("error" in state) body = <Text style={styles.danger}>목록을 불러오지 못했습니다: {state.error}</Text>;
-  else if (state.items.length === 0) body = <Text style={styles.muted}>이 워크스페이스에 북마크한 각주가 없습니다.</Text>;
-  else {
-    const groups = new Map<string, BookmarkItem[]>();
-    for (const item of state.items) groups.set(item.documentPath, [...(groups.get(item.documentPath) ?? []), item]);
-    body = [...groups].map(([documentPath, items]) => (
-      <View key={documentPath} style={styles.group}>
-        <Text style={styles.path}>
-          {relative(documentPath)}
-          {samePath(documentPath, currentPath) ? " (현재 문서)" : ""}
-        </Text>
-        {items.map((item) => {
-          const key = `${documentPath}#${item.label}`;
-          const title = `★ ${item.title || `각주 ${item.label}`}`;
-          const memo = item.memo ? (
-            <Text style={styles.memo} numberOfLines={2}>
-              메모: {item.memo}
-            </Text>
-          ) : null;
-          if (samePath(documentPath, currentPath)) {
-            return (
-              <Pressable key={key} accessibilityRole="button" style={styles.row} onPress={() => onOpenHere(item.label)}>
-                <Text style={styles.title}>{title}</Text>
-                {memo}
-              </Pressable>
-            );
-          }
-          return (
-            <OtherDocumentBookmark
-              key={key}
-              documentPath={documentPath}
-              linkPath={relative(documentPath)}
-              label={item.label}
-              title={title}
-              style={styles.row}
-              onFollow={onClose}
-            >
-              {memo}
-            </OtherDocumentBookmark>
-          );
-        })}
-      </View>
-    ));
-  }
-
-  return (
-    // Drawn inside the panel rather than in a Modal: file links resolve only within the workspace
-    // screen, which owns the handler that opens file tabs.
-    open ? (
-      <>
-        <Pressable accessibilityRole="none" style={styles.backdrop} onPress={onClose} />
-        <View style={styles.popover}>
-          <View style={styles.popoverHeader}>
-            <Text style={styles.popoverTitle}>북마크</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="북마크 목록 닫기" onPress={onClose}>
-              <Text style={styles.secondary}>닫기</Text>
-            </Pressable>
-          </View>
-          <ScrollView contentContainerStyle={styles.popoverBody}>{body}</ScrollView>
-        </View>
-      </>
-    ) : null
-  );
-}
 
 function modalStyles(theme: Theme) {
   return {

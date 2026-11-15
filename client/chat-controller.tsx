@@ -10,6 +10,7 @@ import {
   type NoteMeta,
   removeFootnote,
   setNoteMeta,
+  toggledBookmark,
 } from "../shared/markdown";
 import { DeleteNoteModal, MemoModal, QuestionModal, shortTitle, type Theme } from "./doc-ask-panel";
 import { followAnswer, newRequestId, openNotesPanel } from "./host";
@@ -78,7 +79,7 @@ class ChatController {
           this.set({ dialog: { kind: "question", label: selection.label, selected: selection.text } });
         else void this.askNote(selection.label, selection.text, mode, question, selection.whole);
       },
-      toggleBookmark: (label) => void this.changeMeta(label, (meta) => ({ ...meta, bookmark: !meta.bookmark })),
+      toggleBookmark: (label) => void this.changeMeta(label, toggledBookmark),
       editMemo: (label) => this.set({ dialog: { kind: "memo", label } }),
       deleteNote: (label) => this.set({ dialog: { kind: "delete", label } }),
       openNote: (label) => this.openNote(label),
