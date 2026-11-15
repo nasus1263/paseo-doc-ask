@@ -9,7 +9,7 @@ import { NoteTitle } from "./note-title";
 import { type NotesSnapshot, useNotes } from "./notes-store";
 import { promptSettings, resetRpc } from "../shared/explain";
 import { directoryOf } from "../shared/links";
-import { type Footnote, splitTitle } from "../shared/markdown";
+import { type Footnote, plainLine, splitTitle } from "../shared/markdown";
 
 /** Height of the footnote list: about eight one-line rows. */
 const LIST_HEIGHT = 240;
@@ -50,6 +50,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
       list: {
         height: LIST_HEIGHT,
         flexGrow: 0,
+        flexShrink: 0,
         borderBottomWidth: 1,
         borderBottomColor: theme.colors.border,
       },
@@ -82,6 +83,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
       },
       body: { flex: 1, minWidth: 0, gap: 2 },
       memo: { color: theme.colors.foregroundMuted, fontSize: 12 },
+      detailScroll: { flex: 1, minHeight: 0 },
       detail: { padding: pad },
     }),
     [theme, pad],
@@ -145,10 +147,10 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
           ) : (
             <>
               <ListTitle title={title} theme={theme} />
-              {note.passage ? (
+              {shownPassage(note, title) ? (
                 // The dragged passage, lined up with the title text after its kind icon.
                 <Text style={[styles.memo, { marginLeft: 20 }]} numberOfLines={1} ellipsizeMode="tail">
-                  {note.passage}
+                  {shownPassage(note, title)}
                 </Text>
               ) : null}
             </>
@@ -164,8 +166,9 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
     );
   };
 
+  // The header and the list stay put; only the open note below them scrolls.
   return (
-    <ScrollView style={styles.screen}>
+    <View style={styles.screen}>
       <View style={styles.header}>
         <Icon name={chat ? "MessageSquare" : "FileText"} size={14} color={theme.colors.foregroundMuted} />
         <Text style={styles.document} numberOfLines={1}>
@@ -194,7 +197,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         ) : null}
       </ScrollView>
       {message ? (
-        <View style={styles.detail}>
+        <ScrollView style={styles.detailScroll} contentContainerStyle={styles.detail}>
           <NoteDetail
             message={message}
             theme={theme}
@@ -206,10 +209,10 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
             imageBases={imageBases}
             focusRequest={focusRequest}
           />
-        </View>
+        </ScrollView>
       ) : null}
       {Dialogs ? <Dialogs theme={theme} /> : null}
-    </ScrollView>
+    </View>
   );
 }
 
@@ -305,4 +308,16 @@ function PanelTools({
       <PromptModal open={promptOpen} theme={theme} onClose={() => setPromptOpen(false)} />
     </>
   );
+}
+
+/**
+ * The dragged passage a list row shows under its title, or null when the title already is that
+ * passage, as for a plain 설명: a question is titled by the question instead. A long passage is
+ * cut short in the title, so its start is what must match.
+ */
+function shownPassage(note: Footnote, title: string): string | null {
+  const passage = note.passage;
+  if (!passage) return null;
+  const subject = plainLine(splitTitle(title)?.subject ?? "").replace(/…$/, "");
+  return subject && plainLine(passage).startsWith(subject) ? null : passage;
 }
