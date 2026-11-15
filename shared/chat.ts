@@ -188,7 +188,8 @@ function quoteComments(entries: { quote: string; comment: string }[]): string {
         .split("\n")
         .map((line) => `> ${line}`)
         .join("\n");
-      return `${quoted}\n\n${comment}`;
+      // An empty comment only points at the passage.
+      return comment ? `${quoted}\n\n${comment}` : quoted;
     })
     .join("\n\n");
 }

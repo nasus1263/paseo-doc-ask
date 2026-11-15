@@ -8,10 +8,10 @@ import { ASK_ACTIONS, holdHighlight, keepSelectionOnPress, watchSelection } from
 
 /**
  * The box that opens where a selection ends, shared by documents and agent answers: a focused
- * text field (Enter saves it as the reader's comment or, when empty, asks for 설명; Ctrl+Enter
- * asks it as a question; Ctrl+C when empty copies the selection; Shift+Enter breaks the line;
- * Esc cancels) and icon buttons: 설명 and 시각화, which use the typed text as the request when
- * there is one, 질문, and saving the typed text as a comment.
+ * text field (Enter asks the typed text as a question or, when empty, asks for 설명; Ctrl+Enter
+ * saves it as the reader's comment, even empty; Ctrl+C when empty copies the selection;
+ * Shift+Enter breaks the line; Esc cancels) and icon buttons: 설명 and 시각화, which use the typed
+ * text as the request when there is one, 질문, and saving the typed text as a comment.
  */
 
 /** Wide enough for the key hint on one line next to the buttons. */
@@ -22,7 +22,7 @@ const MAX_INPUT_HEIGHT = 160;
 const COMPOSER_TIPS: Record<AskMode, string> = {
   term: "설명: 선택한 부분을 쉽게 설명. 입력한 내용은 요청사항으로 쓴다 (입력이 비었을 때 Enter)",
   visual: "시각화: 표, 다이어그램, 그림으로 설명. 입력한 내용은 요청사항으로 쓴다",
-  question: "질문: 입력한 내용을 질문으로 보낸다 (Ctrl+Enter)",
+  question: "질문: 입력한 내용을 질문으로 보낸다 (입력이 있을 때 Enter)",
 };
 
 /** How far below the pointer the box opens; mirrors `watchSelection`'s offset. */
@@ -116,9 +116,10 @@ export function SelectionComposer({
   // Pressing a button must not blur the text field first.
   useEffect(() => keepSelectionOnPress(bar.current), [draft.id]);
 
+  // An empty comment is allowed: it only points the agent at the passage.
   const save = async () => {
     const comment = text.trim();
-    if (!comment || saving) return;
+    if (saving) return;
     setSaving(true);
     try {
       if (await onComment(comment)) onClose();
@@ -148,8 +149,8 @@ export function SelectionComposer({
     // Enter while an IME is composing (Korean, Japanese, …) only finishes the character.
     if (key === "Enter" && !shiftKey && !isComposing && keyCode !== 229) {
       event.preventDefault();
-      if (mod) ask("question");
-      else if (text.trim()) void save();
+      if (mod) void save();
+      else if (text.trim()) ask("question");
       else ask("term");
     } else if (mod && key.toLowerCase() === "c" && !text) {
       // Nothing to copy in the empty field: copy the selected passage instead.
@@ -241,18 +242,16 @@ export function SelectionComposer({
             onPress={() => ask(action.mode)}
           />
         ))}
-        {text.trim() ? (
-          <IconButton
-            icon="PenLine"
-            label={`${commentLabel}: 입력한 내용을 이 구절에 남긴다. AI에게 묻지 않는다 (Enter)`}
-            theme={theme}
-            align="left"
-            filled
-            onPress={() => void save()}
-          />
-        ) : null}
+        <IconButton
+          icon="PenLine"
+          label={`${commentLabel}: 입력한 내용을 이 구절에 남긴다. 비어 있으면 구절만 남긴다. AI에게 묻지 않는다 (Ctrl+Enter)`}
+          theme={theme}
+          align="left"
+          filled
+          onPress={() => void save()}
+        />
         <Text style={styles.hint} numberOfLines={1}>
-          {saving ? "저장 중…" : `Enter ${commentLabel}(비면 설명) · Ctrl+Enter 질문 · Shift+Enter 줄바꿈 · Esc 취소`}
+          {saving ? "저장 중…" : `Enter 질문(비면 설명) · Ctrl+Enter ${commentLabel} · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>
       </View>
     </View>

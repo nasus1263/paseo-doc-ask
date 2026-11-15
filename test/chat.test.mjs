@@ -160,3 +160,10 @@ test("answerAges counts user messages after each answer", () => {
     [3, 2, 2, 1],
   );
 });
+
+test("an empty comment sends only its quoted passage", () => {
+  const comments = annotateChat("", "멱등성은 중요하다.", "m", { from: 0, to: 3 }, "지시", "멱등성", "", { comment: true }).comments;
+  const pending = unsentComments(chatNotes(comments), new Map([["m", { text: "멱등성은 중요하다.", turnsAgo: 1 }]]));
+  assert.deepEqual(pending.items, [{ quote: "멱등성", comment: "", turnsAgo: 1 }]);
+  assert.equal(pending.block, "### 직전 답변\n\n> 멱등성");
+});
