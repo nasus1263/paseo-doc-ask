@@ -1,6 +1,6 @@
 import { type PluginWorkspacePanelProps, useRpc, useSettings, useWorkspace } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { IconButton, type PressState } from "./controls";
 import { NoteDetail, PromptModal } from "./doc-ask-panel";
@@ -23,6 +23,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
   const pad = layout.compact ? 12 : 14;
   // Opening a note from the list puts the cursor in its follow-up field.
   const [focusRequest, setFocusRequest] = useState(0);
+  const detail = useRef<ScrollView>(null);
   const root = useWorkspace(workspaceId, (workspace) => workspace.directory);
   // A relative image path is read against the document's folder, then the workspace's.
   const documentPath = notes?.path.startsWith("agent:") ? null : (notes?.path ?? null);
@@ -197,7 +198,16 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
         ) : null}
       </ScrollView>
       {message ? (
-        <ScrollView style={styles.detailScroll} contentContainerStyle={styles.detail}>
+        <ScrollView
+          ref={detail}
+          style={styles.detailScroll}
+          contentContainerStyle={styles.detail}
+          // A request's answer keeps its end in view: while it is written and once it is saved.
+          // A footnote opened from the list stays at its top.
+          onContentSizeChange={() => {
+            if (message.kind !== "note") detail.current?.scrollToEnd({ animated: false });
+          }}
+        >
           <NoteDetail
             message={message}
             theme={theme}
