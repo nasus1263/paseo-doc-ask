@@ -649,7 +649,6 @@ function DocAskViewer(props: PluginFilePanelProps) {
       ) : view.view === "preview" ? (
         <PreviewView
           body={linkedBody ?? prepared.body}
-          notes={prepared.notes}
           marks={prepared.marks}
           theme={theme}
           compact={layout.compact}
@@ -727,7 +726,6 @@ function readingLayout(compact: boolean) {
 
 interface PreviewProps {
   body: string;
-  notes: Footnote[];
   marks: Mark[];
   theme: Theme;
   compact: boolean;
@@ -749,7 +747,6 @@ interface PreviewProps {
  */
 function PreviewView({
   body,
-  notes,
   marks,
   theme,
   compact,
@@ -820,7 +817,6 @@ function PreviewView({
       <View style={styles.gutter}>
         <View ref={content} style={styles.frame} onLayout={(event) => setSize(event.nativeEvent.layout)}>
           <Markdown>{body}</Markdown>
-          <FootnoteList notes={notes} theme={theme} />
           {draft ? (
             <SelectionComposer
               draft={draft}
