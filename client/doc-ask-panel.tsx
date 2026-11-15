@@ -60,6 +60,7 @@ import { stepMatch } from "../shared/search";
 import { onJumpRequest, requestJump, takeJump } from "./jumps";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import { IconButton } from "./controls";
+import { RichMarkdown } from "./rich-markdown";
 import { followAnswer, newRequestId, openNotesPanel } from "./host";
 import {
   type Message,
@@ -1611,6 +1612,7 @@ export function NoteDetail({
   onToggleBookmark,
   onEditMemo,
   onDelete,
+  imageBases,
 }: {
   message: Message;
   theme: Theme;
@@ -1620,6 +1622,8 @@ export function NoteDetail({
   onToggleBookmark: (label: string) => void;
   onEditMemo: (label: string) => void;
   onDelete: (label: string) => void;
+  /** Folders a relative image path in the footnote is tried against, in order. */
+  imageBases: readonly string[];
 }) {
   const toast = useToast();
   // A footnote shows its latest content, which accumulates follow-ups; a failed save shows the
@@ -1758,15 +1762,15 @@ export function NoteDetail({
           {showsNote ? (
             splitFollowUps(answer).map((unit, i) => (
               <View key={i} style={styles.unit}>
-                <Markdown>{unit}</Markdown>
+                <RichMarkdown text={unit} theme={theme} bases={imageBases} />
               </View>
             ))
           ) : (
-            <Markdown>{answer}</Markdown>
+            <RichMarkdown text={answer} theme={theme} bases={imageBases} />
           )}
           {draft ? (
             <View style={styles.unit}>
-              <Markdown>{draft}</Markdown>
+              <RichMarkdown text={draft} theme={theme} bases={imageBases} />
             </View>
           ) : null}
           {selection && showsNote && message.note !== undefined ? (

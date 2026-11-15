@@ -1,10 +1,11 @@
-import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { type PluginWorkspacePanelProps, useWorkspace } from "@getpaseo/plugin/client";
 import { Icon, Markdown } from "@getpaseo/plugin/client/ui";
 import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PressState } from "./controls";
 import { NoteDetail } from "./doc-ask-panel";
 import { useNotes } from "./notes-store";
+import { directoryOf } from "../shared/links";
 import type { Footnote } from "../shared/markdown";
 
 /** Height of the footnote list: about eight one-line rows. */
@@ -17,6 +18,13 @@ const LIST_HEIGHT = 240;
 export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   const notes = useNotes();
   const pad = layout.compact ? 12 : 14;
+  const root = useWorkspace(workspaceId, (workspace) => workspace.directory);
+  // A relative image path is read against the document's folder, then the workspace's.
+  const documentPath = notes?.path.startsWith("agent:") ? null : (notes?.path ?? null);
+  const imageBases = useMemo(
+    () => [...(documentPath ? [directoryOf(documentPath)] : []), ...(root ? [root] : [])],
+    [documentPath, root],
+  );
   const styles = useMemo(
     () => ({
       screen: { flex: 1, minHeight: 0, backgroundColor: theme.colors.surface0 },
@@ -177,6 +185,7 @@ export function NotesPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
             onToggleBookmark={actions.toggleBookmark}
             onEditMemo={actions.editMemo}
             onDelete={actions.deleteNote}
+            imageBases={imageBases}
           />
         </View>
       ) : null}

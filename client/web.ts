@@ -1208,3 +1208,86 @@ function setNativeValue(input: ComposerNode, value: string): void {
   Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
+
+interface DomFrame {
+  srcdoc: string;
+  title: string;
+  style: Record<string, string>;
+  contentWindow: unknown;
+  setAttribute(name: string, value: string): void;
+  remove(): void;
+}
+interface MessageEventLike {
+  source: unknown;
+  data: unknown;
+}
+
+/** Smallest and largest height of a visual frame; taller content scrolls inside it. */
+const FRAME_MIN_HEIGHT = 40;
+const FRAME_MAX_HEIGHT = 560;
+
+/** The page a visual aid runs in: theme colors as CSS variables, and a height report. */
+function frameDocument(code: string, theme: PluginFilePanelProps["theme"]): string {
+  const c = theme.colors;
+  const style = `<style>
+:root{--fg:${c.foreground};--muted:${c.foregroundMuted};--accent:${c.accent};--border:${c.border};--surface:${c.surface1};--bg:${c.surface0};color-scheme:light dark}
+html,body{margin:0;padding:0;background:transparent;color:var(--fg);font:13px/1.5 system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif}
+html{overflow:hidden}
+svg{max-width:100%;height:auto;display:block;margin:0 auto}
+canvas,img,video{max-width:100%}
+</style>`;
+  // Reports the content height to the panel, which sizes the frame to it. The page scrolls only
+  // when taller than the frame can grow: a scrollbar narrows it, which would resize scaled
+  // content such as an SVG, and so its height, again.
+  const report = `<script>(function(){var last=0;function send(){var h=Math.ceil(document.documentElement.getBoundingClientRect().height);document.documentElement.style.overflowY=h>${FRAME_MAX_HEIGHT}?"auto":"hidden";if(h!==last){last=h;parent.postMessage({docAskFrameHeight:h},"*");}}
+new ResizeObserver(send).observe(document.documentElement);addEventListener("load",send);send();})();</script>`;
+  return `<!doctype html><html><head><meta charset="utf-8">${style}</head><body>${code}${report}</body></html>`;
+}
+
+/**
+ * Draws a ```svg or ```html visual aid inside `parent` in a sandboxed frame: its scripts run,
+ * but it cannot reach the app, its storage, or this page. The frame takes the height of its
+ * content. Returns the cleanup; a no-op off the web.
+ */
+export function mountVisualFrame(
+  parent: unknown,
+  kind: "svg" | "html",
+  code: string,
+  theme: PluginFilePanelProps["theme"],
+): () => void {
+  if (Platform.OS !== "web" || !parent) return () => {};
+  const doc = document as unknown as { createElement(tag: "iframe"): DomFrame };
+  const frame = doc.createElement("iframe");
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.title = kind === "svg" ? "그림" : "시각 자료";
+  Object.assign(frame.style, {
+    display: "block",
+    width: "100%",
+    height: `${kind === "svg" ? 160 : 240}px`,
+    border: "0",
+    background: "transparent",
+  });
+  (parent as DomDiv).appendChild(frame);
+  // The page loads once the frame first comes on screen: a WebGL page started off screen may
+  // never draw, and visuals far down a long note cost nothing until reached.
+  let observer: IntersectionObserver | null = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    observer?.disconnect();
+    observer = null;
+    frame.srcdoc = frameDocument(code, theme);
+  });
+  observer.observe(frame);
+  const onMessage = (event: unknown) => {
+    const { source, data } = event as MessageEventLike;
+    if (source !== frame.contentWindow) return;
+    const height = (data as { docAskFrameHeight?: unknown } | null)?.docAskFrameHeight;
+    if (typeof height !== "number" || !Number.isFinite(height)) return;
+    frame.style.height = `${Math.min(FRAME_MAX_HEIGHT, Math.max(FRAME_MIN_HEIGHT, height))}px`;
+  };
+  window.addEventListener("message", onMessage as DomListener);
+  return () => {
+    window.removeEventListener("message", onMessage as DomListener);
+    observer?.disconnect();
+    frame.remove();
+  };
+}

@@ -4,6 +4,7 @@ import { readChatNotes, writeChatNotes } from "./server/chat-notes";
 import { readComments, writeComments } from "./server/comments";
 import { commitFootnotes } from "./server/commit";
 import { createExplain, resetContext } from "./server/explainer";
+import { readImage } from "./server/images";
 import { resolveLinks } from "./server/links";
 import { followAnswer } from "./server/stream";
 import {
@@ -18,6 +19,7 @@ import {
 } from "./shared/explain";
 import { resolveLinksRpc } from "./shared/links";
 import { chatNotesReadRpc, chatNotesWriteRpc, chatSettings } from "./shared/chat";
+import { imageReadRpc } from "./shared/visuals";
 
 /** Shortest time between two drafts of an answer sent to the app. */
 const STREAM_INTERVAL_MS = 100;
@@ -58,5 +60,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(resolveLinksRpc, resolveLinks);
   server.handle(chatNotesReadRpc, readChatNotes);
   server.handle(chatNotesWriteRpc, writeChatNotes);
+  server.handle(imageReadRpc, readImage);
   return () => {};
 }
