@@ -7,6 +7,7 @@ import { chatMarks, copyComments } from "../shared/chat";
 import { keptLength } from "../shared/markdown";
 import { type MessageSelection, useChatController } from "./chat-controller";
 import { FootnoteTooltip, QuestionModal } from "./doc-ask-panel";
+import { focusComposer } from "./host";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import {
   chatViewport,
@@ -182,6 +183,9 @@ export function ChatMessage({
                 return false;
               }
               toast.show("지시를 달았습니다.", { variant: "success" });
+              // Next comes the message the instruction goes out with: focus the composer (as Ctrl+L),
+              // once the selection box has closed.
+              setTimeout(() => focusComposer(agentId), 0);
               return true;
             }}
             onAsk={(mode, typed) => {

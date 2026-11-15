@@ -18,6 +18,12 @@ export async function recentTimeline(agentId: string, limit: number): Promise<{ 
   return page.entries.map((entry) => entry.item);
 }
 
+/** Puts the cursor in `agentId`'s message box, like Ctrl+L. */
+export function focusComposer(agentId: string): void {
+  const composer = client?.composers({ agentId })[0];
+  composer?.focus().catch((cause: unknown) => console.error("[doc-ask] Could not focus the composer", cause));
+}
+
 /** A fresh ID naming one explain request, for `followAnswer`. */
 export function newRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
