@@ -1,6 +1,9 @@
 import { defineRpc, defineSettings, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 
+/** The label key of explainer agents; its value is the workspace the explainer serves. */
+export const EXPLAINER_LABEL = "paseo-doc-ask";
+
 /** `term` explains, `question` answers a question, `visual` explains through a visual aid. */
 export const askModeSchema = z.enum(["term", "question", "visual"]);
 export type AskMode = z.infer<typeof askModeSchema>;

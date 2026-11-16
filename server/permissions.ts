@@ -4,7 +4,7 @@ type Paseo = PluginHandlerContext["paseo"];
 type AgentHandle = ReturnType<Paseo["agents"]["ref"]>;
 export type PermissionRequest = NonNullable<AgentHandle["pendingPermissions"]>[number];
 export type PermissionResponse = Parameters<AgentHandle["respondToPermission"]>[0]["response"];
-export type Decide = (request: PermissionRequest) => PermissionResponse;
+export type Decide = (request: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>;
 type RunResult = Awaited<ReturnType<AgentHandle["run"]>>;
 
 /** Upper bound on permission round trips, so a looping agent cannot hang the queue. */
@@ -25,7 +25,7 @@ export async function runDeciding(
     const pending = agent.pendingPermissions ?? [];
     if (pending.length === 0) break;
     for (const request of pending) {
-      await agent.respondToPermission({ requestId: request.id, response: decide(request) });
+      await agent.respondToPermission({ requestId: request.id, response: await decide(request) });
     }
     result = await agent.waitForFinish(timeoutMs);
   }

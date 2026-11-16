@@ -1,13 +1,13 @@
 import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import type { explainRpc, resetRpc } from "../shared/explain";
-import { READ_TOOLS, runDeciding, type PermissionRequest, type PermissionResponse } from "./permissions";
+import { EXPLAINER_LABEL as LABEL, type explainRpc, type resetRpc } from "../shared/explain";
+import { READ_TOOLS, runDeciding, type Decide, type PermissionRequest } from "./permissions";
+import { permissionPrompts, type PermissionPrompts } from "./prompts";
 import { AgentPool } from "./pool";
 import { AnswerDraft, endAnswer, publishAnswer } from "./stream";
 
 type Paseo = PluginHandlerContext["paseo"];
 
-const LABEL = "paseo-doc-ask";
 const PROVIDER = "claude/claude-sonnet-5-5";
 const THINKING = "low";
 const RUN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -88,7 +88,7 @@ async function ask(
   try {
     // A throw, such as for an archived or deleted agent, discards the agent.
     const directory = await workspaceDirectory(paseo, input.workspaceId);
-    result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt, directory), RUN_TIMEOUT_MS, readOnly);
+    result = await runDeciding(agent, buildPrompt(agentId, input, extraPrompt, directory), RUN_TIMEOUT_MS, askingUser(agentId));
   } finally {
     stopStreaming?.();
   }
@@ -248,11 +248,27 @@ function rememberDoc(agentId: string, input: RpcInput<typeof explainRpc>) {
   docs.set(input.path, input.document);
 }
 
-/** Explaining only reads: file reads are allowed anywhere, every other tool is denied. */
-export function readOnly(request: PermissionRequest): PermissionResponse {
-  if (READ_TOOLS.has(request.name)) return { behavior: "allow" };
-  console.log(`Denied ${request.name} while explaining`);
-  return { behavior: "deny", message: "문서 해설 중에는 파일 읽기(Read, Grep, Glob, LS)만 허용된다. 명령 실행이나 수정 없이 답하라." };
+/** Explaining reads files freely; any other tool waits for the user's answer in the app. */
+export function askingUser(agentId: string, prompts: PermissionPrompts = permissionPrompts): Decide {
+  return async (request) => {
+    if (READ_TOOLS.has(request.name)) return { behavior: "allow" };
+    const allowed = await prompts.ask({
+      id: `${agentId}:${request.id}`,
+      agentId,
+      tool: request.name,
+      title: request.title ?? null,
+      detail: describeRequest(request),
+    });
+    if (allowed) return { behavior: "allow" };
+    console.log(`Denied ${request.name} while explaining`);
+    return { behavior: "deny", message: "사용자가 이 도구 사용을 거부했다. 이 도구 없이 답하라." };
+  };
+}
+
+/** What a permission request would do, short enough for a dialog. */
+function describeRequest(request: PermissionRequest): string {
+  const text = request.description?.trim() || (request.input ? JSON.stringify(request.input, null, 2) : "");
+  return text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
 }
 
 function describeFailure(status: string, error: string | null): string {

@@ -13,6 +13,8 @@ import { BookmarksPanel } from "./client/bookmarks-panel";
 import { DocAskPanel } from "./client/doc-ask-panel";
 import { BOOKMARKS_PANEL_ID, NOTES_PANEL_ID, setPluginClient } from "./client/host";
 import { NotesPanel } from "./client/notes-panel";
+import { installPermissionPrompts, withPermissionDialog } from "./client/permission-dialog";
+import { SESSIONS_SCREEN_ID, SessionsScreen, SessionsSidebarItem } from "./client/sessions-screen";
 import { installCommentSendHook } from "./client/web";
 
 /**
@@ -55,14 +57,14 @@ export default function contribute(client: PluginClientContext) {
       title: "문서 질문",
       icon: "MessageCircleQuestion",
       files: { extensions: ["md", "markdown"] },
-      Component: DocAskPanel,
+      Component: withPermissionDialog(DocAskPanel),
     }),
     client.addWorkspacePanel({
       id: NOTES_PANEL_ID,
       title: "주석",
       icon: "NotebookPen",
       locations: ["explorer", "workspace"],
-      Component: NotesPanel,
+      Component: withPermissionDialog(NotesPanel),
     }),
     client.addWorkspacePanel({
       id: BOOKMARKS_PANEL_ID,
@@ -71,6 +73,9 @@ export default function contribute(client: PluginClientContext) {
       locations: ["explorer", "workspace"],
       Component: BookmarksPanel,
     }),
+    client.addScreen({ id: SESSIONS_SCREEN_ID, title: "질문 세션", Component: SessionsScreen }),
+    client.addSidebarHeaderItem({ id: SESSIONS_SCREEN_ID, title: "질문 세션", Component: SessionsSidebarItem }),
+    installPermissionPrompts(client),
     client.addCommandCenterItem({
       id: "open-bookmarks",
       title: "각주 북마크 열기",
