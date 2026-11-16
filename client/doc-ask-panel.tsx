@@ -59,7 +59,8 @@ import { onJumpRequest, takeJump } from "./jumps";
 import { SelectionComposer, useSelectionDraft } from "./selection-composer";
 import { IconButton } from "./controls";
 import { NoteTitle, TitledUnit } from "./note-title";
-import { RichMarkdown } from "./rich-markdown";
+import { directoryOf } from "../shared/links";
+import { RichMarkdown, useLocalImages } from "./rich-markdown";
 import { followAnswer, newRequestId, openNotesPanel } from "./host";
 import {
   type Message,
@@ -140,6 +141,9 @@ function DocAskViewer(props: PluginFilePanelProps) {
   const prepared = useMemo(() => (text === null ? null : prepareFootnotes(text, comments)), [text, comments]);
   const workspaceDirectory = useWorkspace(workspaceId, (workspace) => workspace?.directory ?? null);
   const linkedBody = useLinkedMarkdown(prepared?.body ?? null, file.path, workspaceDirectory);
+  // A relative image path is read against the document's folder, then the workspace's.
+  const imageBases = useMemo(() => [directoryOf(file.path), workspaceDirectory].filter((dir): dir is string => !!dir), [file.path, workspaceDirectory]);
+  const previewBody = useLocalImages(linkedBody ?? prepared?.body ?? "", imageBases);
 
   const show = useCallback((next: string) => {
     latestText.current = next;
@@ -649,7 +653,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
         loadError ? null : <Loading />
       ) : view.view === "preview" ? (
         <PreviewView
-          body={linkedBody ?? prepared.body}
+          body={previewBody}
           marks={prepared.marks}
           theme={theme}
           compact={layout.compact}

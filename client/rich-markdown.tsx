@@ -41,7 +41,7 @@ function VisualFrame({ kind, code, theme }: { kind: "svg" | "html"; code: string
 }
 
 /** `text` with images on local paths turned into data URLs once the daemon has read them. */
-function useLocalImages(text: string, bases: readonly string[]): string {
+export function useLocalImages(text: string, bases: readonly string[]): string {
   const read = useRpc(imageReadRpc);
   const paths = useMemo(() => localImagePaths(text), [text]);
   const key = paths.length > 0 ? JSON.stringify([bases, paths]) : null;
