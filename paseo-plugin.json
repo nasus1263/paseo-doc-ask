@@ -1,6 +1,7 @@
 {
   "id": "paseo-doc-ask",
   "name": "문서 질문",
+  "description": "Select text in Markdown documents or agent replies to get AI explanations, visuals, and answers saved as footnotes.",
   "media": [],
   "requirements": {
     "paseo": ">=0.16.0-beta.2"
