@@ -174,6 +174,9 @@ detail`);
             </Text>
           ) : null}
         </View>
+        {instruction && note.meta.excluded && !note.meta.sent ? (
+          <Icon name="Ban" size={13} color={theme.colors.foregroundMuted} />
+        ) : null}
         {note.meta.bookmark ? <Icon name="Star" size={13} color={theme.colors.statusWarning} /> : null}
       </Pressable>
     );
@@ -237,6 +240,7 @@ detail`);
             note={openNote}
             onAsk={actions.ask}
             onToggleBookmark={actions.toggleBookmark}
+            onToggleExcluded={actions.toggleExcluded}
             onEditMemo={actions.editMemo}
             onDelete={actions.deleteNote}
             imageBases={imageBases}

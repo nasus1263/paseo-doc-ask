@@ -167,3 +167,21 @@ test("an empty comment sends only its quoted passage", () => {
   assert.deepEqual(pending.items, [{ quote: "멱등성", comment: "", turnsAgo: 1 }]);
   assert.equal(pending.block, "### 직전 답변\n\n> 멱등성");
 });
+
+test("unsentComments leaves out comments held back, until they are let go again", () => {
+  const text = "멱등성은 중요하다. 캐시는 어렵다.";
+  let comments = annotateChat("", text, "m", { from: 0, to: 3 }, "주석", "멱등성", "동의함", { comment: true }).comments;
+  comments = annotateChat(comments, text, "m", { from: 11, to: 13 }, "주석", "캐시", "예시 필요", { comment: true }).comments;
+  const answers = new Map([["m", { text, turnsAgo: 1 }]]);
+  const meta = (label) => chatNotes(comments).find((note) => note.label === label).meta;
+
+  comments = setNoteMeta(comments, "1", { ...meta("1"), excluded: true });
+  assert.equal(meta("1").excluded, true);
+  assert.deepEqual(unsentComments(chatNotes(comments), answers).labels, ["2"]);
+  comments = setNoteMeta(comments, "2", { ...meta("2"), excluded: true });
+  assert.equal(unsentComments(chatNotes(comments), answers), null);
+
+  comments = setNoteMeta(comments, "1", { ...meta("1"), excluded: false });
+  assert.equal(meta("1").excluded, undefined);
+  assert.deepEqual(unsentComments(chatNotes(comments), answers).labels, ["1"]);
+});

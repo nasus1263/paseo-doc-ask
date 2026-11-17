@@ -1348,6 +1348,7 @@ export function NoteDetail({
   note,
   onAsk,
   onToggleBookmark,
+  onToggleExcluded,
   onEditMemo,
   onDelete,
   imageBases,
@@ -1359,6 +1360,8 @@ export function NoteDetail({
   note: Footnote | undefined;
   onAsk: (selection: NoteSelection, mode: AskMode, question?: string) => void;
   onToggleBookmark: (label: string) => void;
+  /** Present for an agent conversation, whose unsent instructions can be held back. */
+  onToggleExcluded?: (label: string) => void;
   onEditMemo: (label: string) => void;
   onDelete: (label: string) => void;
   /** Folders a relative image path in the footnote is tried against, in order. */
@@ -1466,6 +1469,15 @@ export function NoteDetail({
               onPress={() => onToggleBookmark(note.label)}
             />
             <IconButton icon="StickyNote" label="메모 편집" theme={theme} onPress={() => onEditMemo(note.label)} />
+            {onToggleExcluded && note.meta.comment && note.meta.anchor && !note.meta.sent ? (
+              <IconButton
+                icon={note.meta.excluded ? "Ban" : "Send"}
+                label={note.meta.excluded ? "다음 메시지에 포함 (지금: 제외)" : "다음 메시지에서 제외 (지금: 포함)"}
+                theme={theme}
+                color={note.meta.excluded ? theme.colors.foregroundMuted : theme.colors.accent}
+                onPress={() => onToggleExcluded(note.label)}
+              />
+            ) : null}
           </>
         ) : null}
         {answer ? <IconButton icon="Copy" label="내용 복사" theme={theme} onPress={copyAnswer} /> : null}

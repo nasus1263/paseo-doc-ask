@@ -94,6 +94,7 @@ class ChatController {
         else void this.askNote(selection.label, selection.text, mode, question, selection.whole);
       },
       toggleBookmark: (label) => void this.changeMeta(label, toggledBookmark),
+      toggleExcluded: (label) => void this.changeMeta(label, (meta) => ({ ...meta, excluded: !meta.excluded })),
       editMemo: (label) => this.set({ dialog: { kind: "memo", label } }),
       deleteNote: (label) => this.set({ dialog: { kind: "delete", label } }),
       openNote: (label) => this.openNote(label),

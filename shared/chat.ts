@@ -212,7 +212,7 @@ export function answerAge(turnsAgo: number | undefined): string {
 }
 
 /**
- * The reader's comments not yet sent to the agent, on every answer: grouped by answer, oldest
+ * The reader's comments not yet sent to the agent and not held back, on every answer: grouped by answer, oldest
  * first, each group headed by how many turns ago its answer came and quoted the way
  * `copyComments` does. `answers` tells the text (for passage order) and age of the answers it
  * knows; comments on others still go, after their passage alone. Null when there are none.
@@ -224,7 +224,7 @@ export function unsentComments(
   const groups = new Map<string, Footnote[]>();
   for (const note of notes) {
     const anchor = note.meta.anchor;
-    if (!note.meta.comment || note.meta.sent || !anchor) continue;
+    if (!note.meta.comment || note.meta.sent || note.meta.excluded || !anchor) continue;
     const group = groups.get(anchor.message);
     if (group) group.push(note);
     else groups.set(anchor.message, [note]);

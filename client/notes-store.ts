@@ -34,6 +34,8 @@ export interface NotesActions {
   /** `question` is the typed question or request, if any. */
   ask(selection: NoteSelection, mode: AskMode, question?: string): void;
   toggleBookmark(label: string): void;
+  /** Holds an unsent instruction back from the next message, or lets it go again. Chat only. */
+  toggleExcluded?(label: string): void;
   editMemo(label: string): void;
   /** Asks for confirmation, then removes the footnote with its highlight and references. */
   deleteNote(label: string): void;
