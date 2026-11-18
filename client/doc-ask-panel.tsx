@@ -653,6 +653,7 @@ function DocAskViewer(props: PluginFilePanelProps) {
         loadError ? null : <Loading />
       ) : view.view === "preview" ? (
         <PreviewView
+          documentPath={file.path}
           body={previewBody}
           marks={prepared.marks}
           theme={theme}
@@ -730,6 +731,8 @@ function readingLayout(compact: boolean) {
 }
 
 interface PreviewProps {
+  /** The document, for keeping its 임시 각주. */
+  documentPath: string;
   body: string;
   marks: Mark[];
   theme: Theme;
@@ -751,6 +754,7 @@ interface PreviewProps {
  * (comment, 설명, 질문).
  */
 function PreviewView({
+  documentPath,
   body,
   marks,
   theme,
@@ -766,7 +770,8 @@ function PreviewView({
 }: PreviewProps) {
   const content = useRef<View>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const { draft, close, focused } = useSelectionDraft(content);
+  const tempTarget = useMemo(() => ({ file: `doc:${documentPath}`, scope: "" }), [documentPath]);
+  const { draft, close, focused, typed } = useSelectionDraft(content, tempTarget);
   const decorations = useRef<ReturnType<typeof decoratePreview> | null>(null);
   const onHoverRef = useRef(onHover);
   onHoverRef.current = onHover;
@@ -826,6 +831,7 @@ function PreviewView({
             <SelectionComposer
               draft={draft}
               focused={focused}
+              typed={typed}
               theme={theme}
               containerWidth={size.width}
               containerHeight={size.height}

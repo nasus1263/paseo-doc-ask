@@ -58,7 +58,8 @@ export function ChatMessage({
   const content = useRef<View>(null);
   const decorations = useRef<PreviewDecorations | null>(null);
   const [question, setQuestion] = useState<MessageSelection | null>(null);
-  const { draft, close, focused } = useSelectionDraft(content);
+  const tempTarget = useMemo(() => ({ file: `agent:${agentId}`, scope: key }), [agentId, key]);
+  const { draft, close, focused, typed } = useSelectionDraft(content, tempTarget);
 
   // Footnote tooltip; it stays open briefly after the pointer leaves the passage so the pointer
   // can move onto it.
@@ -177,6 +178,7 @@ export function ChatMessage({
           <SelectionComposer
             draft={draft}
             focused={focused}
+            typed={typed}
             theme={theme}
             containerWidth={size?.width ?? 0}
             containerHeight={size?.height ?? 0}

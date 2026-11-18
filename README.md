@@ -19,6 +19,7 @@ Plugins must be enabled on the daemon (**Settings → Plugins → Enable plugins
   - **Enter**: ask (empty input = explain)
   - **Ctrl+Enter**: save your own note, no AI
   - Buttons: explain, visualize, ask, note
+  - Closing the box with text in it, without sending, keeps it as a **draft note** (blue passage; click to continue, delete with the trash button or by clearing the text). It never reaches the AI or the document.
 - Answers are saved as a highlight (`==text==[^n]`) in the document, and the footnote body goes to `<name>.comment.md` next to it.
 - The side **주석** panel lists footnotes. You can ask follow-ups, bookmark, add memos, or delete.
 - Agent replies: turn on **대화 주석 켜기** in the Command Center (Ctrl/⌘K). Notes on replies can be attached to your next message automatically.

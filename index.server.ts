@@ -8,6 +8,7 @@ import { readImage } from "./server/images";
 import { resolveLinks } from "./server/links";
 import { permissionPrompts } from "./server/prompts";
 import { followAnswer } from "./server/stream";
+import { readTempNotes, writeTempNotes } from "./server/temp-notes";
 import {
   bookmarksRpc,
   commentsReadRpc,
@@ -21,6 +22,7 @@ import {
 import { resolveLinksRpc } from "./shared/links";
 import { chatNotesReadRpc, chatNotesWriteRpc, chatSettings } from "./shared/chat";
 import { permissionPromptsStream, permissionRespondRpc } from "./shared/permission";
+import { tempNotesReadRpc, tempNotesWriteRpc } from "./shared/temp-notes";
 import { imageReadRpc } from "./shared/visuals";
 
 /** Shortest time between two drafts of an answer sent to the app. */
@@ -63,6 +65,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(chatNotesReadRpc, readChatNotes);
   server.handle(chatNotesWriteRpc, writeChatNotes);
   server.handle(imageReadRpc, readImage);
+  server.handle(tempNotesReadRpc, readTempNotes);
+  server.handle(tempNotesWriteRpc, writeTempNotes);
   server.handle(permissionPromptsStream, (_input, { push, signal }) => {
     const stop = permissionPrompts.listen((prompts) => void push({ prompts }));
     signal.addEventListener("abort", stop, { once: true });

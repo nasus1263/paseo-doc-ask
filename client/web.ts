@@ -15,6 +15,7 @@ import {
   type TextRange,
 } from "../shared/markdown";
 import { findMatches } from "../shared/search";
+import { nearestOccurrence } from "../shared/temp-notes";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 interface DomEvent {
@@ -686,6 +687,134 @@ export function holdHighlight(range: unknown): () => void {
   }
   registry.set(HELD_NAME, new globals.Highlight(range as DomRange));
   return () => registry.delete(HELD_NAME);
+}
+
+/** A 임시 각주 to paint: the passage and which repeat of it. */
+export interface TempPassage {
+  id: string;
+  text: string;
+  hint: number;
+}
+
+export interface TempPainter {
+  set(passages: readonly TempPassage[]): void;
+  dispose(): void;
+}
+
+const TEMP_NAME = "doc-ask-temp-note";
+let tempHighlight: SharedHighlight | null = null;
+
+/**
+ * Paints 임시 각주 inside `container` in the held-selection color and reports a plain click on
+ * one with the same shape as a finished selection, so the selection box can reopen there.
+ */
+export function paintTempNotes(
+  container: unknown,
+  onOpen: (id: string, selection: RenderedSelection) => void,
+): TempPainter {
+  const globals = globalThis as HighlightGlobals;
+  const registry = globals.CSS?.highlights;
+  if (Platform.OS !== "web" || !container || !registry || !globals.Highlight) return { set() {}, dispose() {} };
+  if (!tempHighlight) {
+    const style = document.createElement("style");
+    style.textContent = `::highlight(${TEMP_NAME}) { background-color: ${HELD_COLOR}; }`;
+    document.head.appendChild(style);
+    tempHighlight = new globals.Highlight() as unknown as SharedHighlight;
+    registry.set(TEMP_NAME, tempHighlight);
+  }
+  const highlight = tempHighlight;
+  const root = container as DomElement;
+  let passages: readonly TempPassage[] = [];
+  let painted: { id: string; range: DomRange }[] = [];
+  let frame = 0;
+  let observer: MutationObserver | null = null;
+
+  const unpaint = () => {
+    for (const p of painted) highlight.delete(p.range);
+    painted = [];
+  };
+  const paint = () => {
+    frame = 0;
+    unpaint();
+    if (passages.length === 0) return;
+    let plain = "";
+    const at: { node: DomText; offset: number }[] = [];
+    const walker = document.createTreeWalker(root, SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? "";
+      for (let i = 0; i < text.length; i++) {
+        if (!isKept(text[i])) continue;
+        plain += text[i];
+        at.push({ node, offset: i });
+      }
+    }
+    for (const passage of passages) {
+      const needle = [...passage.text].filter(isKept).join("");
+      const start = nearestOccurrence(plain, needle, passage.hint);
+      if (start === -1) continue;
+      const first = at[start];
+      const last = at[start + needle.length - 1];
+      const range = document.createRange();
+      range.setStart(first.node, first.offset);
+      range.setEnd(last.node, last.offset + 1);
+      highlight.add(range);
+      painted.push({ id: passage.id, range });
+    }
+  };
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(paint);
+  };
+  const observe = (needed: boolean) => {
+    if (needed && !observer) {
+      observer = new MutationObserver(schedule);
+      observer.observe(root, { childList: true, subtree: true, characterData: true });
+    } else if (!needed && observer) {
+      observer.disconnect();
+      observer = null;
+    }
+  };
+
+  const click: DomListener = (event) => {
+    if (document.getSelection()?.isCollapsed === false) return;
+    const x = event.clientX;
+    const y = event.clientY;
+    for (const p of painted) {
+      const rects = p.range.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        const r = rects[i];
+        if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+        const before = document.createRange();
+        before.selectNodeContents(root);
+        before.setEnd(p.range.startContainer, p.range.startOffset);
+        const box = root.getBoundingClientRect();
+        const maxLeft = Math.max(0, box.right - box.left - ACTIONS_WIDTH);
+        onOpen(p.id, {
+          text: p.range.toString(),
+          prefix: before.toString(),
+          top: y + 12 - box.top,
+          left: Math.min(maxLeft, Math.max(0, x - box.left - 8)),
+          range: p.range.cloneRange(),
+        });
+        return;
+      }
+    }
+  };
+  root.addEventListener("click", click);
+
+  return {
+    set(next) {
+      if (next.length === 0 && passages.length === 0) return;
+      passages = next;
+      observe(next.length > 0);
+      schedule();
+    },
+    dispose() {
+      observe(false);
+      if (frame) cancelAnimationFrame(frame);
+      root.removeEventListener("click", click);
+      unpaint();
+    },
+  };
 }
 
 /** Approximate width of the floating action buttons, to keep them inside the container. */

@@ -2,9 +2,11 @@ import { copyText, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { type MutableRefObject, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import type { AskMode } from "../shared/explain";
+import { keptLength } from "../shared/markdown";
 import { IconButton } from "./controls";
 import type { Theme } from "./doc-ask-panel";
-import { ASK_ACTIONS, holdHighlight, keepSelectionOnPress, watchSelection } from "./web";
+import { newTempNoteId, useTempNotes } from "./temp-notes";
+import { ASK_ACTIONS, holdHighlight, keepSelectionOnPress, paintTempNotes, type TempPainter, watchSelection } from "./web";
 
 /**
  * The box that opens where a selection ends, shared by documents and agent answers: a focused
@@ -38,34 +40,93 @@ export interface SelectionDraft {
   left: number;
   /** The selected DOM range, kept highlighted while the box has focus. */
   range: unknown;
+  /** Text to start with: what a reopened 임시 각주 held. */
+  initial?: string;
+  /** The 임시 각주 this box was reopened from. */
+  tempId?: string;
+}
+
+/** Where 임시 각주 of a view are kept: `file` names the document or agent, `scope` the message. */
+export interface TempNoteTarget {
+  file: string | null;
+  scope: string;
 }
 
 /**
  * Follows selections inside `container`. Typing or selecting inside the box does not replace
- * the draft it belongs to.
+ * the draft it belongs to. A box closed without being sent (Esc, a click elsewhere, a new
+ * selection) keeps what was typed as a 임시 각주 of `temp`, painted on its passage; clicking it
+ * reopens the box with that text.
  */
-export function useSelectionDraft(container: RefObject<View | null>): {
+export function useSelectionDraft(
+  container: RefObject<View | null>,
+  temp?: TempNoteTarget,
+): {
   draft: SelectionDraft | null;
-  close: () => void;
+  /** Closes the box; `submitted` when its text was sent, which consumes a reopened 임시 각주. */
+  close: (submitted?: boolean) => void;
   focused: MutableRefObject<boolean>;
+  /** What is typed in the open box, kept by the box. */
+  typed: MutableRefObject<string>;
 } {
   const [draft, setDraft] = useState<SelectionDraft | null>(null);
   const focused = useRef(false);
   const count = useRef(0);
+  const typed = useRef("");
+  const open = useRef<SelectionDraft | null>(null);
+  const tempNotes = useTempNotes(temp?.file ?? null, temp?.scope ?? "");
+  const tempRef = useRef(tempNotes);
+  tempRef.current = tempNotes;
+
+  const replace = useCallback((next: SelectionDraft | null, submitted = false) => {
+    const previous = open.current;
+    if (previous) {
+      const store = tempRef.current;
+      if (submitted) {
+        if (previous.tempId) store.drop(previous.tempId);
+      } else {
+        store.keep({
+          id: previous.tempId ?? newTempNoteId(),
+          text: previous.text,
+          hint: keptLength(previous.prefix),
+          input: typed.current,
+        });
+      }
+    }
+    open.current = next;
+    typed.current = next?.initial ?? "";
+    if (!next) focused.current = false;
+    setDraft(next);
+  }, []);
+
   useEffect(
     () =>
       watchSelection(container.current, (selection) => {
         if (focused.current) return;
-        setDraft(selection ? { id: ++count.current, ...selection } : null);
+        if (!selection && !open.current) return;
+        replace(selection ? { id: ++count.current, ...selection } : null);
       }),
-    [container],
+    [container, replace],
   );
+  const painter = useRef<TempPainter | null>(null);
+  useEffect(() => {
+    painter.current = paintTempNotes(container.current, (tempId, selection) => {
+      const note = tempRef.current.find(tempId);
+      if (note) replace({ id: ++count.current, ...selection, initial: note.input, tempId });
+    });
+    return () => {
+      painter.current?.dispose();
+      painter.current = null;
+    };
+  }, [container, replace]);
+  useEffect(() => {
+    painter.current?.set(tempNotes.notes);
+  }, [tempNotes.notes]);
+  // Leaving the view keeps what was typed too.
+  useEffect(() => () => replace(null), [replace]);
   useEffect(() => (draft ? holdHighlight(draft.range) : undefined), [draft]);
-  const close = useCallback(() => {
-    focused.current = false;
-    setDraft(null);
-  }, []);
-  return { draft, close, focused };
+  const close = useCallback((submitted?: boolean) => replace(null, submitted === true), [replace]);
+  return { draft, close, focused, typed };
 }
 
 /** Key events from the text field; on web `nativeEvent` is the DOM keyboard event. */
@@ -84,6 +145,7 @@ interface KeyEvent {
 export function SelectionComposer({
   draft,
   focused,
+  typed,
   theme,
   containerWidth,
   containerHeight,
@@ -94,6 +156,8 @@ export function SelectionComposer({
 }: {
   draft: SelectionDraft;
   focused: MutableRefObject<boolean>;
+  /** Follows the typed text, so closing the box can keep it as a 임시 각주. */
+  typed: MutableRefObject<string>;
   theme: Theme;
   containerWidth: number;
   containerHeight: number;
@@ -103,16 +167,26 @@ export function SelectionComposer({
   onComment: (text: string) => Promise<boolean>;
   /** Asks the AI; `text` is the typed request or question, if any. */
   onAsk: (mode: AskMode, text: string | undefined) => void;
-  onClose: () => void;
+  /** Closes the box; `submitted` once its text was sent. */
+  onClose: (submitted?: boolean) => void;
 }) {
   const bar = useRef<View>(null);
   const toast = useToast();
-  const [text, setText] = useState("");
+  const [text, setText] = useState(draft.initial ?? "");
   const [saving, setSaving] = useState(false);
   const [height, setHeight] = useState(0);
   useEffect(() => {
-    setText("");
-  }, [draft.id]);
+    setText(draft.initial ?? "");
+  }, [draft.id, draft.initial]);
+  const edit = (next: string) => {
+    typed.current = next;
+    setText(next);
+  };
+  // Clearing the text before closing drops the 임시 각주.
+  const removeTemp = () => {
+    edit("");
+    onClose();
+  };
   // Pressing a button must not blur the text field first.
   useEffect(() => keepSelectionOnPress(bar.current), [draft.id]);
 
@@ -122,7 +196,7 @@ export function SelectionComposer({
     if (saving) return;
     setSaving(true);
     try {
-      if (await onComment(comment)) onClose();
+      if (await onComment(comment)) onClose(true);
     } finally {
       setSaving(false);
     }
@@ -130,14 +204,14 @@ export function SelectionComposer({
 
   const ask = (mode: AskMode) => {
     onAsk(mode, text.trim() || undefined);
-    onClose();
+    onClose(true);
   };
 
   const copySelection = async () => {
     try {
       await copyText(draft.text);
       toast.show("선택한 부분을 복사했습니다.", { variant: "success" });
-      onClose();
+      onClose(true);
     } catch {
       toast.error("복사하지 못했습니다.");
     }
@@ -217,7 +291,7 @@ export function SelectionComposer({
         multiline
         value={text}
         editable={!saving}
-        onChangeText={setText}
+        onChangeText={edit}
         onFocus={() => {
           focused.current = true;
         }}
@@ -250,6 +324,15 @@ export function SelectionComposer({
           filled
           onPress={() => void save()}
         />
+        {draft.tempId ? (
+          <IconButton
+            icon="Trash2"
+            label="임시 각주 삭제: 입력해 둔 내용을 지우고 닫는다"
+            theme={theme}
+            align="left"
+            onPress={removeTemp}
+          />
+        ) : null}
         <Text style={styles.hint} numberOfLines={1}>
           {saving ? "저장 중…" : `Enter 질문(비면 설명) · Ctrl+Enter ${commentLabel} · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>
