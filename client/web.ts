@@ -142,6 +142,11 @@ export interface PreviewDecorations {
    * it. Waits for a pending repaint. Reports whether it was found.
    */
   reveal(number: number): Promise<boolean>;
+  /**
+   * Footnote `number`'s painted passage as a selection, for opening the selection box on it: below
+   * `point` (client coordinates) when given, else below the passage. Null when it is not painted.
+   */
+  selectionOf(number: number, point?: { x: number; y: number }): RenderedSelection | null;
   dispose(): void;
 }
 
@@ -201,9 +206,9 @@ export function decoratePreview(
   container: unknown,
   overlay: unknown,
   onHover: (hover: FootnoteHover | null) => void,
-  onOpen: (number: number) => void,
+  onOpen: (number: number, point: { x: number; y: number }) => void,
 ): PreviewDecorations {
-  const none: PreviewDecorations = { setMarks() {}, reveal: async () => false, dispose() {} };
+  const none: PreviewDecorations = { setMarks() {}, reveal: async () => false, selectionOf: () => null, dispose() {} };
   if (Platform.OS !== "web" || !container || !overlay) return none;
   const root = container as DomElement;
   const overlayElement = overlay as DomElement;
@@ -363,7 +368,7 @@ export function decoratePreview(
   const click: DomListener = (event) => {
     if (document.getSelection()?.isCollapsed === false) return;
     const hit = footnoteAt(event.clientX, event.clientY);
-    if (hit) onOpen(hit.number);
+    if (hit) onOpen(hit.number, { x: event.clientX, y: event.clientY });
   };
   root.addEventListener("mousemove", move);
   root.addEventListener("mouseleave", leave);
@@ -380,6 +385,25 @@ export function decoratePreview(
     reveal(number) {
       if (!frame) return Promise.resolve(revealNow(number));
       return new Promise((resolve) => afterPaint.push(() => resolve(revealNow(number))));
+    },
+    selectionOf(number, point) {
+      const mark = painted.find((m) => m.number === number);
+      if (!mark) return null;
+      const rect = mark.range.getBoundingClientRect();
+      const x = point?.x ?? rect.left;
+      const y = point?.y ?? rect.bottom;
+      const before = document.createRange();
+      before.selectNodeContents(root);
+      before.setEnd(mark.range.startContainer, mark.range.startOffset);
+      const box = root.getBoundingClientRect();
+      const maxLeft = Math.max(0, box.right - box.left - ACTIONS_WIDTH);
+      return {
+        text: mark.range.toString(),
+        prefix: before.toString(),
+        top: y + 12 - box.top,
+        left: Math.min(maxLeft, Math.max(0, x - box.left - 8)),
+        range: mark.range.cloneRange(),
+      };
     },
     dispose() {
       observe(false);

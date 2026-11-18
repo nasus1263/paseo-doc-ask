@@ -59,7 +59,7 @@ export function ChatMessage({
   const decorations = useRef<PreviewDecorations | null>(null);
   const [question, setQuestion] = useState<MessageSelection | null>(null);
   const tempTarget = useMemo(() => ({ file: `agent:${agentId}`, scope: key }), [agentId, key]);
-  const { draft, close, focused, typed } = useSelectionDraft(content, tempTarget);
+  const { draft, close, focused, typed, open } = useSelectionDraft(content, tempTarget);
 
   // Footnote tooltip; it stays open briefly after the pointer leaves the passage so the pointer
   // can move onto it.
@@ -83,15 +83,23 @@ export function ChatMessage({
   );
   const hoveredNote = hover ? notes.find((note) => note.number === hover.number) : undefined;
 
+  // Clicking an instruction opens it for editing; other footnotes open in the side panel.
+  const openNumber = useCallback(
+    (number: number, point?: { x: number; y: number }) => {
+      const note = controller.notes().find((n) => n.number === number);
+      const selection = note?.meta.comment ? decorations.current?.selectionOf(number, point) : null;
+      if (!note || !selection) return controller.openNoteByNumber(number);
+      open({ ...selection, initial: controller.commentText(note.label), editLabel: note.label });
+    },
+    [controller, open],
+  );
   useEffect(() => {
-    decorations.current = decoratePreview(content.current, content.current, onHover, (number) =>
-      controller.openNoteByNumber(number),
-    );
+    decorations.current = decoratePreview(content.current, content.current, onHover, openNumber);
     return () => {
       decorations.current?.dispose();
       decorations.current = null;
     };
-  }, [controller, onHover]);
+  }, [onHover, openNumber]);
   // Opening the agent's tab shows its rows: the side panel then follows this conversation.
   useEffect(() => {
     let shown = false;
@@ -185,6 +193,12 @@ export function ChatMessage({
             commentLabel="지시"
             onClose={close}
             onComment={async (comment) => {
+              if (draft.editLabel) {
+                const failure = await controller.editComment(draft.editLabel, comment);
+                if (failure) toast.error(failure);
+                else toast.show("지시를 고쳤습니다.", { variant: "success" });
+                return failure === null;
+              }
               const selection = picked();
               if (!selection) return false;
               const failure = await controller.addComment(selection, comment);
@@ -219,14 +233,15 @@ export function ChatMessage({
           />
         ) : null}
       </View>
-      {hover && hoveredNote ? (
+      {/* The selection box takes over the passage; its tooltip would cover the box. */}
+      {hover && hoveredNote && !draft ? (
         <FootnoteTooltip
           hover={hover}
           note={hoveredNote}
           theme={theme}
           room={room}
           onOpen={() => {
-            controller.openNote(hoveredNote.label);
+            openNumber(hoveredNote.number);
             overTip.current = false;
             setHover(null);
           }}

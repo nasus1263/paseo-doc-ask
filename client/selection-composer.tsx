@@ -44,6 +44,8 @@ export interface SelectionDraft {
   initial?: string;
   /** The 임시 각주 this box was reopened from. */
   tempId?: string;
+  /** The instruction this box edits; closing it unsaved leaves the instruction as it was. */
+  editLabel?: string;
 }
 
 /** Where 임시 각주 of a view are kept: `file` names the document or agent, `scope` the message. */
@@ -68,6 +70,8 @@ export function useSelectionDraft(
   focused: MutableRefObject<boolean>;
   /** What is typed in the open box, kept by the box. */
   typed: MutableRefObject<string>;
+  /** Opens the box on `selection`, such as an instruction to edit. */
+  open: (selection: Omit<SelectionDraft, "id">) => void;
 } {
   const [draft, setDraft] = useState<SelectionDraft | null>(null);
   const focused = useRef(false);
@@ -80,7 +84,7 @@ export function useSelectionDraft(
 
   const replace = useCallback((next: SelectionDraft | null, submitted = false) => {
     const previous = open.current;
-    if (previous) {
+    if (previous && !previous.editLabel) {
       const store = tempRef.current;
       if (submitted) {
         if (previous.tempId) store.drop(previous.tempId);
@@ -126,7 +130,11 @@ export function useSelectionDraft(
   useEffect(() => () => replace(null), [replace]);
   useEffect(() => (draft ? holdHighlight(draft.range) : undefined), [draft]);
   const close = useCallback((submitted?: boolean) => replace(null, submitted === true), [replace]);
-  return { draft, close, focused, typed };
+  const openDraft = useCallback(
+    (selection: Omit<SelectionDraft, "id">) => replace({ id: ++count.current, ...selection }),
+    [replace],
+  );
+  return { draft, close, focused, typed, open: openDraft };
 }
 
 /** Key events from the text field; on web `nativeEvent` is the DOM keyboard event. */
@@ -210,8 +218,8 @@ export function SelectionComposer({
   const copySelection = async () => {
     try {
       await copyText(draft.text);
+      // The box and the selection stay, so the passage can still be asked about.
       toast.show("선택한 부분을 복사했습니다.", { variant: "success" });
-      onClose(true);
     } catch {
       toast.error("복사하지 못했습니다.");
     }
@@ -299,7 +307,7 @@ export function SelectionComposer({
           focused.current = false;
         }}
         onKeyPress={(event) => onKeyPress(event as unknown as KeyEvent)}
-        placeholder="내용 입력"
+        placeholder={draft.editLabel ? `${commentLabel} 수정` : "내용 입력"}
         placeholderTextColor={theme.colors.foregroundMuted}
         accessibilityLabel={`${commentLabel}, 또는 설명 요청이나 질문 내용`}
         style={[styles.input, { height: inputHeight }]}
@@ -334,7 +342,7 @@ export function SelectionComposer({
           />
         ) : null}
         <Text style={styles.hint} numberOfLines={1}>
-          {saving ? "저장 중…" : `Enter 질문(비면 설명) · Ctrl+Enter ${commentLabel} · Shift+Enter 줄바꿈 · Esc 취소`}
+          {saving ? "저장 중…" : `Enter 질문(비면 설명) · Ctrl+Enter ${commentLabel}${draft.editLabel ? " 저장" : ""} · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>
       </View>
     </View>

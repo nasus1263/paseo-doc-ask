@@ -441,6 +441,29 @@ export function appendToFootnote(
   return lines.join("\n");
 }
 
+/**
+ * Replaces the body of footnote `label` (the part under its title line, before any follow-up)
+ * with `body`, indented to stay inside the footnote. Follow-ups are kept. Null when `text` does
+ * not define the footnote.
+ */
+export function replaceFootnoteBody(text: string, label: string, body: string): string | null {
+  const lines = text.split("\n");
+  const span = definitionSpan(lines, label);
+  if (!span) return null;
+  let end = span.last + 1;
+  for (let i = span.first + 2; i <= span.last; i++) {
+    if (lines[i - 1].trim() === "" && FOLLOW_UP_HEADING.test(lines[i].trim())) {
+      end = i - 1;
+      break;
+    }
+  }
+  const indented = body.trim()
+    ? ["", ...body.trim().split("\n").map((line) => (line.trim() === "" ? "" : `    ${line}`))]
+    : [];
+  lines.splice(span.first + 1, end - (span.first + 1), ...indented);
+  return lines.join("\n");
+}
+
 /** A follow-up's heading line inside a footnote, as `appendToFootnote` writes it. */
 const FOLLOW_UP_HEADING = /^\*\*(설명|질문|시각화): .*\*\*$/;
 

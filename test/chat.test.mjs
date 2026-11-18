@@ -185,3 +185,26 @@ test("unsentComments leaves out comments held back, until they are let go again"
   assert.equal(meta("1").excluded, undefined);
   assert.deepEqual(unsentComments(chatNotes(comments), answers).labels, ["1"]);
 });
+
+test("replaceFootnoteBody edits an instruction and keeps its follow-ups", async () => {
+  const { replaceFootnoteBody, splitFollowUps, splitTitle } = await import("../shared/markdown.ts");
+  const { chatNotes } = await import("../shared/chat.ts");
+  const text = [
+    "[^1]: **지시: 구절** <!-- doc-ask {\"comment\":true} -->",
+    "",
+    "    예전 지시",
+    "",
+    "    **질문: 왜**",
+    "",
+    "    답",
+    "",
+  ].join("\n");
+  const next = replaceFootnoteBody(text, "1", "새 지시\n둘째 줄");
+  const note = chatNotes(next)[0];
+  const parts = splitFollowUps(note.content);
+  assert.equal(splitTitle(parts[0]).body.trim(), "새 지시\n둘째 줄");
+  assert.equal(parts.length, 2);
+  assert.equal(note.meta.comment, true);
+  assert.equal(chatNotes(replaceFootnoteBody(text, "1", "")).length, 1);
+  assert.equal(replaceFootnoteBody(text, "9", "x"), null);
+});

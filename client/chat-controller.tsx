@@ -18,7 +18,10 @@ import {
   locateRendered,
   type NoteMeta,
   removeFootnote,
+  replaceFootnoteBody,
   setNoteMeta,
+  splitFollowUps,
+  splitTitle,
   toggledBookmark,
 } from "../shared/markdown";
 import { DeleteNoteModal, MemoModal, QuestionModal, shortTitle, type Theme } from "./doc-ask-panel";
@@ -315,6 +318,30 @@ class ChatController {
     } catch (cause) {
       return `저장 실패: ${cause instanceof Error ? cause.message : String(cause)}`;
     }
+  }
+
+  /**
+   * Rewrites the reader's instruction `label`. An edited instruction counts as unsent again, so
+   * the new wording goes out with the next message. Returns an error message, or null when saved.
+   */
+  async editComment(label: string, comment: string): Promise<string | null> {
+    const meta = this.notes().find((n) => n.label === label)?.meta ?? {};
+    try {
+      return await this.update((latest) => {
+        const edited = replaceFootnoteBody(latest, label, comment);
+        return edited === null ? null : setNoteMeta(edited, label, { ...meta, sent: false });
+      }, "이 지시를 찾지 못했습니다.");
+    } catch (cause) {
+      return `저장 실패: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+
+  /** The text of the reader's instruction `label`, without its title and follow-ups. */
+  commentText(label: string): string {
+    const note = this.notes().find((n) => n.label === label);
+    if (!note) return "";
+    const first = splitFollowUps(note.content)[0] ?? "";
+    return (splitTitle(first)?.body ?? first).trim();
   }
 
   /** A follow-up on a footnote shown in the side panel; the answer joins that footnote. */
