@@ -4,6 +4,12 @@
 
 A [Paseo](https://paseo.sh) plugin for reading Markdown with an AI at your side. Select text in a document or an agent reply, ask for an explanation or a visual, and keep the answer as a footnote.
 
+![Selecting text in a document opens the input box](docs/images/document-popup.png)
+
+![An explanation saved as a highlighted footnote, shown in the side panel](docs/images/document-footnote-panel.png)
+
+![In an agent reply: an instruction (pink), a temporary note (blue), and the input box](docs/images/chat-instruction-temp-note.png)
+
 ## Install
 
 ```bash

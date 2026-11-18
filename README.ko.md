@@ -4,6 +4,12 @@
 
 Markdown 문서나 에이전트 답변에서 구절을 드래그해 AI에게 설명·시각화·질문을 받고, 답을 각주로 남기는 [Paseo](https://paseo.sh) 플러그인.
 
+![문서에서 드래그하면 열리는 입력 칸](docs/images/document-popup.png)
+
+![형광펜 각주와 주석 패널](docs/images/document-footnote-panel.png)
+
+![에이전트 답변의 지시(분홍), 임시 각주(파랑), 입력 칸](docs/images/chat-instruction-temp-note.png)
+
 ## 설치
 
 ```bash
