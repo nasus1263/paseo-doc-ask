@@ -40,18 +40,15 @@ import {
   type TextRange,
 } from "../shared/markdown";
 import {
-  ASK_ACTIONS,
   decoratePreview,
   type DocViewerHandle,
+  elementSize,
   type FootnoteHover,
-  keepSelectionOnPress,
   mountViewer,
   onEnterKey,
   type PreviewSearch,
-  type RenderedSelection,
   searchPreview,
   watchFindShortcut,
-  watchSelection,
   watchShown,
 } from "./web";
 import { stepMatch } from "../shared/search";
@@ -1384,10 +1381,12 @@ export function NoteDetail({
   const draft = showsNote && message.kind === "pending" ? message.answer : null;
   const memo = showsNote ? note.meta.memo : undefined;
   const content = useRef<View>(null);
-  const actions = useRef<View>(null);
-  const [selection, setSelection] = useState<RenderedSelection | null>(null);
-  useEffect(() => (showsNote ? watchSelection(content.current, setSelection) : undefined), [showsNote]);
-  useEffect(() => keepSelectionOnPress(actions.current), [selection !== null]);
+  // Selecting text in the footnote opens the same box as in documents and agent answers.
+  const { draft: selection, close: closeSelection, focused, typed } = useSelectionDraft(content);
+  // Only a footnote can be asked about; a request's status text is not.
+  useEffect(() => {
+    if (selection && !showsNote) closeSelection();
+  }, [selection, showsNote, closeSelection]);
   const [followUp, setFollowUp] = useState("");
   const followUpField = useRef<NativeTextInput>(null);
   useEffect(() => {
@@ -1420,7 +1419,6 @@ export function NoteDetail({
               ? theme.colors.statusSuccess
               : theme.colors.foregroundMuted,
       },
-      actions: { position: "absolute" as const, flexDirection: "row" as const, gap: 6 },
       memo: {
         borderLeftWidth: 2,
         borderLeftColor: theme.colors.statusWarning,
@@ -1431,6 +1429,7 @@ export function NoteDetail({
       memoLabel: { color: theme.colors.foregroundMuted, fontSize: 12 },
       memoText: { color: theme.colors.foreground, fontSize: 13 },
       units: { gap: 8 },
+      hidden: { display: "none" as const },
       unit: {
         backgroundColor: theme.colors.surface1,
         borderRadius: 8,
@@ -1446,6 +1445,8 @@ export function NoteDetail({
         borderRadius: 8,
         paddingHorizontal: 10,
         paddingVertical: 8,
+        minHeight: 36,
+        maxHeight: 160,
       },
     }),
     [theme, message.kind],
@@ -1507,8 +1508,10 @@ export function NoteDetail({
       ) : null}
       {/* A footnote starts with its own bold title. */}
       {message.title && !showsNote ? <RequestTitle title={message.title} theme={theme} /> : null}
-      {answer ? (
-        <View ref={content} style={styles.units}>
+      {/* Always mounted: the selection box watches it from the first render. */}
+      <View ref={content} style={answer ? styles.units : styles.hidden}>
+        {answer ? (
+          <>
           {/* A footnote shows its original note and each follow-up as a unit of its own. */}
           {showsNote ? (
             splitFollowUps(answer).map((unit, i) => (
@@ -1526,35 +1529,36 @@ export function NoteDetail({
               <RichMarkdown text={draft} theme={theme} bases={imageBases} />
             </View>
           ) : null}
-          {selection && showsNote && message.note !== undefined ? (
-            <View ref={actions} style={[styles.actions, { top: selection.top, left: selection.left }]}>
-              {ASK_ACTIONS.map((action) => (
-                <IconButton
-                  key={action.mode}
-                  icon={action.icon}
-                  label={action.tooltip}
-                  theme={theme}
-                  align="left"
-                  filled
-                  onPress={() => {
-                    onAsk({ text: selection.text, label: message.note as string }, action.mode);
-                    setSelection(null);
-                  }}
-                />
-              ))}
-            </View>
+          {selection && showsNote ? (
+            <SelectionComposer
+              draft={selection}
+              focused={focused}
+              typed={typed}
+              theme={theme}
+              containerWidth={elementSize(content.current).width}
+              containerHeight={elementSize(content.current).height}
+              onClose={closeSelection}
+              onAsk={(mode, text) => onAsk({ text: selection.text, label: note.label }, mode, text)}
+            />
           ) : null}
-        </View>
-      ) : null}
+          </>
+        ) : null}
+      </View>
       {showsNote ? (
         <TextInput
           ref={followUpField}
           value={followUp}
           onChangeText={setFollowUp}
-          onSubmitEditing={askFollowUp}
-          returnKeyType="send"
+          onKeyPress={(event) => {
+            // Enter sends; Shift+Enter breaks the line. An IME composing a character keeps Enter.
+            const key = event.nativeEvent as unknown as { key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number };
+            if (key.key !== "Enter" || key.shiftKey || key.isComposing || key.keyCode === 229) return;
+            event.preventDefault();
+            askFollowUp();
+          }}
+          multiline
           editable={message.kind !== "pending"}
-          placeholder="이 각주에 대해 후속 질문 (Enter 전송)"
+          placeholder="이 각주에 대해 후속 질문 (Enter 전송, Shift+Enter 줄바꿈)"
           placeholderTextColor={theme.colors.foregroundMuted}
           accessibilityLabel="이 각주에 대한 후속 질문"
           style={styles.followUp}

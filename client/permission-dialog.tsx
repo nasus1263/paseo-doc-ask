@@ -1,8 +1,9 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { type ComponentType, useEffect, useState, useSyncExternalStore } from "react";
+import { type ComponentType, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { type PermissionPrompt, permissionPromptsStream, permissionRespondRpc } from "../shared/permission";
+import { watchYesNoKeys } from "./web";
 
 let client: PluginClientContext | null = null;
 let prompts: PermissionPrompt[] = [];
@@ -51,6 +52,10 @@ export function PermissionDialog({ theme }: { theme: PluginTheme }) {
   }, [token]);
   const prompt = useSyncExternalStore(subscribe, () => (hosts.at(-1) === token ? (prompts[0] ?? null) : null));
   const [sending, setSending] = useState(false);
+  const answerRef = useRef<(allow: boolean) => void>(() => {});
+  // Alt+Y approves and Alt+N denies while the dialog is up.
+  const promptId = prompt?.id;
+  useEffect(() => (promptId ? watchYesNoKeys((yes) => answerRef.current(yes)) : undefined), [promptId]);
   if (!prompt) return null;
 
   const answer = (allow: boolean) => {
@@ -61,6 +66,7 @@ export function PermissionDialog({ theme }: { theme: PluginTheme }) {
       .catch((cause: unknown) => console.error("[doc-ask] Could not answer the permission request", cause))
       .finally(() => setSending(false));
   };
+  answerRef.current = answer;
   const button = (allow: boolean) => (
     <Pressable
       accessibilityRole="button"
@@ -77,7 +83,7 @@ export function PermissionDialog({ theme }: { theme: PluginTheme }) {
       })}
     >
       <Text style={{ color: allow ? theme.colors.accentForeground : theme.colors.foreground, fontSize: 14 }}>
-        {allow ? "승인" : "거부"}
+        {allow ? "승인 (Alt+Y)" : "거부 (Alt+N)"}
       </Text>
     </Pressable>
   );

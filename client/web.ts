@@ -24,6 +24,8 @@ interface DomEvent {
   clientY: number;
   target?: unknown;
   key?: string;
+  /** The physical key, such as "KeyY"; unlike `key`, the same under a Korean layout. */
+  code?: string;
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
@@ -562,6 +564,25 @@ export function watchFindShortcut(node: unknown, onFind: () => void): () => void
     document.removeEventListener("pointerdown", press, true);
     window.removeEventListener("keydown", key, true);
   };
+}
+
+/**
+ * Alt+Y and Alt+N anywhere in the app, for answering a dialog: `onAnswer(true)` for Y. Matches the
+ * physical key, so it also works while a Korean input method is on.
+ */
+export function watchYesNoKeys(onAnswer: (yes: boolean) => void): () => void {
+  if (Platform.OS !== "web") return () => {};
+  const key: DomListener = (event) => {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const yes = event.code === "KeyY" || event.key?.toLowerCase() === "y";
+    const no = event.code === "KeyN" || event.key?.toLowerCase() === "n";
+    if (!yes && !no) return;
+    event.preventDefault();
+    event.stopImmediatePropagation?.();
+    onAnswer(yes);
+  };
+  window.addEventListener("keydown", key, true);
+  return () => window.removeEventListener("keydown", key, true);
 }
 
 interface LocatedMark {

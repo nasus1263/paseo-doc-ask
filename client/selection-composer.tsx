@@ -171,8 +171,8 @@ export function SelectionComposer({
   containerHeight: number;
   /** What a saved comment is called: "주석" on documents, "지시" on agent answers. */
   commentLabel?: string;
-  /** Saves the typed text as a comment; resolves true when saved. */
-  onComment: (text: string) => Promise<boolean>;
+  /** Saves the typed text as a comment; resolves true when saved. Absent where there are no comments. */
+  onComment?: (text: string) => Promise<boolean>;
   /** Asks the AI; `text` is the typed request or question, if any. */
   onAsk: (mode: AskMode, text: string | undefined) => void;
   /** Closes the box; `submitted` once its text was sent. */
@@ -201,7 +201,7 @@ export function SelectionComposer({
   // An empty comment is allowed: it only points the agent at the passage.
   const save = async () => {
     const comment = text.trim();
-    if (saving) return;
+    if (saving || !onComment) return;
     setSaving(true);
     try {
       if (await onComment(comment)) onClose(true);
@@ -324,14 +324,16 @@ export function SelectionComposer({
             onPress={() => ask(action.mode)}
           />
         ))}
-        <IconButton
-          icon="PenLine"
-          label={`${commentLabel}: 입력한 내용을 이 구절에 남긴다. 비어 있으면 구절만 남긴다. AI에게 묻지 않는다 (Ctrl+Enter)`}
-          theme={theme}
-          align="left"
-          filled
-          onPress={() => void save()}
-        />
+        {onComment ? (
+          <IconButton
+            icon="PenLine"
+            label={`${commentLabel}: 입력한 내용을 이 구절에 남긴다. 비어 있으면 구절만 남긴다. AI에게 묻지 않는다 (Ctrl+Enter)`}
+            theme={theme}
+            align="left"
+            filled
+            onPress={() => void save()}
+          />
+        ) : null}
         {draft.tempId ? (
           <IconButton
             icon="Trash2"
@@ -342,7 +344,7 @@ export function SelectionComposer({
           />
         ) : null}
         <Text style={styles.hint} numberOfLines={1}>
-          {saving ? "저장 중…" : `Enter 질문(비면 설명) · Ctrl+Enter ${commentLabel}${draft.editLabel ? " 저장" : ""} · Shift+Enter 줄바꿈 · Esc 취소`}
+          {saving ? "저장 중…" : `Enter 질문(비면 설명)${onComment ? ` · Ctrl+Enter ${commentLabel}${draft.editLabel ? " 저장" : ""}` : ""} · Shift+Enter 줄바꿈 · Esc 취소`}
         </Text>
       </View>
     </View>
